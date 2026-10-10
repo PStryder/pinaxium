@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-10-09
+
+- **The always-on service** (`python -m pinaxium.service`) is one process on `127.0.0.1:8190`:
+  - MCP over streamable HTTP at `/mcp`, for any local MCP client;
+  - the images at `/files/<project>/drafts/<file>` and `/files/<project>/finals/<id>`;
+  - `install` sets it to start at logon via Task Scheduler (Windows), with `status`, `restart` and `uninstall` alongside.
+
+  It holds no GPU memory and never needs ComfyUI to serve metadata or existing images. It accepts only requests addressed to this machine, which blocks DNS rebinding and foreign web origins.
+- **Clickable links:**
+  - render replies carry `open:` (a `file:///` link to the file on disk) and `browser:` (the service's `http://127.0.0.1` link);
+  - listings, `finalize_image` and `get_final` carry the same as `file_uri` and `local_url`;
+  - the instructions tell agents to give users these links.
+- **`listChanged` is advertised over every transport** (the SDK's defaults turned it off for HTTP sessions too).
+- **Claude Code** can now connect over HTTP. stdio remains for clients that only launch servers.
+
 ## 0.4.0 — 2026-10-09
 
 ### Projects, drafts and finals

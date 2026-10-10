@@ -13,16 +13,16 @@ import io
 import json
 import logging
 import os
+import pathlib
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-import anyio
 import httpx
 from mcp.server.lowlevel.server import NotificationOptions
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
-from mcp.server.stdio import stdio_server
 from mcp_types import (CallToolResult, Resource, SubscribeRequestParams, TextContent, ToolAnnotations,
                        UnsubscribeRequestParams)
 from PIL import Image as PILImage
@@ -34,7 +34,10 @@ from pinaxium import resources as res
 from pinaxium import workflows as wf
 from pinaxium.config import load
 from pinaxium.engine import Engine, EngineError
-from pinaxium.projects import DEFAULT_PROJECT, NAME_PATTERN, Projects, draft_uri, final_uri, project_name
+from pinaxium.projects import (DEFAULT_PROJECT, NAME_PATTERN, ProjectError, Projects, draft_uri, final_uri,
+                               project_name)
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 from pinaxium.registry import Registry
 from pinaxium.schemas import (DeleteResult, DraftEntry, DraftList, EngineStatus, FinalEntry, FinalizeResult,
                               FinalList, ModelList, ProjectList)
@@ -83,6 +86,10 @@ Omit `model` to use the default.
 only models with capabilities.edit).
 3. Check the result before presenting it: the reply carries the saved path, a pinaxium:// resource link to the \
 full-size PNG and a preview. Use view_image with crop to inspect lettering, hands or faces at full resolution.
+When you show the user an image, give them a link they can click: the `open:` file:/// link (opens the file \
+from this machine's disk) and, when present, the `browser:` http://127.0.0.1 link (opens in any browser on this \
+machine, also where file links are blocked). Listings and finalize results carry the same as file_uri and \
+local_url.
 4. Iterate: the reply reports the seed; reuse it with a changed prompt for controlled variations, or omit it \
 for new ones.
 5. Finish: finalize_image the keeper(s), then delete_images the leftover drafts.
@@ -264,6 +271,61 @@ def _describe(path: str) -> str:
         return f"{path} ({im.width}x{im.height}, {im.mode})"
 
 
+# ---------- links the user can click ----------
+
+SERVICE_MODE = False                 # set by pinaxium.service: this process is the service, so local_url works
+_service_seen = {"at": 0.0, "up": False}
+
+
+def _service_up() -> bool:
+    """Is the always-on Pinaxium service answering (it serves the local_url links)? Cached for 10 s."""
+    if SERVICE_MODE:
+        return True
+    if time.time() - _service_seen["at"] > 10:
+        try:
+            r = httpx.get(cfg.service_url + "/health", timeout=0.5)
+            _service_seen["up"] = r.status_code == 200 and r.json().get("service") == "pinaxium"
+        except Exception:
+            _service_seen["up"] = False
+        _service_seen["at"] = time.time()
+    return _service_seen["up"]
+
+
+def file_uri(path: str) -> str:
+    return pathlib.Path(path).resolve().as_uri()
+
+
+def local_url(kind: str, project: str, key: str) -> str | None:
+    """http://127.0.0.1:<service_port>/files/<project>/<drafts|finals>/<file or id>, or None if not served."""
+    if not _service_up():
+        return None
+    folder = "finals" if kind == "final" else "drafts"
+    return f"{cfg.service_url}/files/{urllib.parse.quote(project)}/{folder}/{urllib.parse.quote(key)}"
+
+
+def links(path: str) -> dict:
+    """file_uri and local_url for a draft or final file (local_url only for Pinaxium's own images)."""
+    out = {"file_uri": file_uri(path), "local_url": None}
+    try:
+        kind, project, real, fid = projects.locate(path)
+        out["local_url"] = local_url(kind, project, fid or os.path.basename(real))
+    except ProjectError:
+        pass
+    return out
+
+
+def _final_links(f: dict) -> dict:
+    """Links for a final entry from projects.finals(): its current file, or none if it can't be found."""
+    if not f["exists"]:
+        return {"file_uri": None, "local_url": None}
+    return {"file_uri": file_uri(f["path"]), "local_url": local_url("final", f["project"], f["id"])}
+
+
+def _link_lines(path: str) -> str:
+    lk = links(path)
+    return f"\nopen: {lk['file_uri']}" + (f"\nbrowser: {lk['local_url']}" if lk["local_url"] else "")
+
+
 def _check_transparency(m, transparent: bool) -> None:
     if transparent and not m.capabilities.get("transparency"):
         raise ValueError(f"model {m.id} can't produce transparent images; pick one with capabilities.transparency")
@@ -315,7 +377,8 @@ async def _run(graph: dict, head: str, max_wait_s: float, ctx: Context, include_
     _record_job(job_id, j["images"])
     if not j["images"]:
         return [f"Finished, but the workflow saved no images. job_id={job_id} ({head})"]
-    out: list = [f"Saved: {', '.join(_describe(x) for x in j['images'])}\n{head}\njob_id={job_id}"]
+    out: list = ["Saved: " + "\n".join(_describe(x) + _link_lines(x) for x in j["images"])
+                 + f"\n{head}\njob_id={job_id}"]
     return out + _results(j["images"], include_preview)
 
 
@@ -532,7 +595,7 @@ async def get_job(
     if j["state"] != "done":
         return [f"Job {job_id} is {j['state']}."]
     project = _record_job(job_id, j["images"])
-    out: list = [f"Saved: {', '.join(_describe(x) for x in j['images'])}"
+    out: list = ["Saved: " + "\n".join(_describe(x) + _link_lines(x) for x in j["images"])
                  + (f"\nproject={project}" if project else "")]
     return out + _results(j["images"], include_preview)
 
@@ -573,13 +636,14 @@ async def list_drafts(
     limit: Limit = 20,
     offset: Offset = 0,
 ) -> DraftList:
-    """List draft images (working renders), newest first, one page at a time: URI, project, prompt, model,
-    seed and, if it was finalized, its final's URI. Metadata only; look at one with view_image. Works while the
-    engine is stopped."""
+    """List draft images (working renders), newest first, one page at a time: URI, clickable links (file_uri,
+    local_url), project, prompt, model, seed and, if it was finalized, its final's URI. Metadata only; look at
+    one with view_image. Works while the engine is stopped."""
     items = projects.drafts(project_name(project) if project else None)
     page = items[offset:offset + limit]
     return DraftList(drafts=[DraftEntry(**{k: d[k] for k in ("uri", "path", "project", "final_uri", "model",
                                                                  "prompt", "seed")},
+                                        **links(d["path"]),
                                         modified=_stamp(d["path"]), bytes=os.path.getsize(d["path"]))
                              for d in page],
                      total=len(items), next_offset=offset + limit if offset + limit < len(items) else None)
@@ -645,7 +709,8 @@ async def list_finals(
     derive_from_final or as a reference in edit_image."""
     items = projects.finals(project_name(project) if project else None, query)
     page = items[offset:offset + limit]
-    entries = [FinalEntry(**f, sheet_number=(i + 1) if thumbnails else None) for i, f in enumerate(page)]
+    entries = [FinalEntry(**f, **_final_links(f), sheet_number=(i + 1) if thumbnails else None)
+               for i, f in enumerate(page)]
     result = FinalList(finals=entries, total=len(items),
                        next_offset=offset + limit if offset + limit < len(items) else None)
     content = [TextContent(type="text", text=result.model_dump_json(indent=1))]
@@ -667,7 +732,8 @@ async def get_final(
     f = projects.get_final(final)
     if not f["exists"]:
         raise ValueError(f"final {f['uri']} is registered but its file is gone: {f['path']}")
-    return [json.dumps({k: v for k, v in f.items() if k != "exists"}, indent=1), _preview(f["path"], max_side)]
+    meta = {**{k: v for k, v in f.items() if k != "exists"}, **_final_links(f)}
+    return [json.dumps(meta, indent=1), _preview(f["path"], max_side)]
 
 
 @tool(title="Finalize image", annotations=_hints(read_only=False, idempotent=True), structured_output=True)
@@ -685,7 +751,8 @@ async def finalize_image(
     permanent id and URI (pinaxium://projects/<project>/finals/<id>), with searchable title, description and
     tags and the draft's provenance. Finals are never deleted or overwritten by Pinaxium. Finalizing the same
     draft again returns its existing final."""
-    return FinalizeResult(**projects.finalize(image, final_id, title, description, tags))
+    r = projects.finalize(image, final_id, title, description, tags)
+    return FinalizeResult(**r, file_uri=file_uri(r["path"]), local_url=local_url("final", r["project"], r["id"]))
 
 
 @tool(title="Relink final", annotations=_hints(read_only=False, idempotent=True))
@@ -696,7 +763,8 @@ async def relink_final(
     """Tell Pinaxium where a final's file went after it was moved outside the finals folder (moves and renames
     inside it are followed automatically). The file must be that final: it carries the final's stamp, or its
     content is unchanged. The final keeps its id and URI."""
-    return FinalizeResult(**projects.relink_final(final, path))
+    r = projects.relink_final(final, path)
+    return FinalizeResult(**r, file_uri=file_uri(r["path"]), local_url=local_url("final", r["project"], r["id"]))
 
 
 @tool(title="Derive from final", annotations=_hints(read_only=False, idempotent=False), structured_output=False)
@@ -766,7 +834,7 @@ async def view_image(
     if not os.path.isfile(path):
         raise ValueError(f"no such file: {path}")
     shown = _preview(path, max_side, crop)
-    note = _describe(path) + (f", showing crop {crop}" if crop else "")
+    note = _describe(path) + (f", showing crop {crop}" if crop else "") + _link_lines(path)
     return [note, shown]
 
 
@@ -815,17 +883,63 @@ def supervisor_log() -> str:
     return res.log_tail(cfg, res.LOG_URIS["pinaxium://logs/supervisor"])
 
 
-async def _serve_stdio() -> None:
-    """MCPServer.run("stdio") advertises resources.listChanged = false to pre-2026 clients, so the
-    initialization options are built here with it switched on."""
-    ll = mcp._lowlevel_server
-    async with stdio_server() as (read_stream, write_stream):
-        await ll.run(read_stream, write_stream,
-                     ll.create_initialization_options(notification_options=NotificationOptions(resources_changed=True)))
+# ---------- initialization options (both transports) ----------
+# The SDK builds a session's initialization options with no notification options, which advertises
+# resources.listChanged = false to pre-2026 clients (stdio and every HTTP session alike). Default them here.
+
+_create_init_options = mcp._lowlevel_server.create_initialization_options
+
+
+def _init_options(*args, **kwargs):
+    if not args and kwargs.get("notification_options") is None:
+        kwargs["notification_options"] = NotificationOptions(resources_changed=True)
+    return _create_init_options(*args, **kwargs)
+
+
+mcp._lowlevel_server.create_initialization_options = _init_options
+
+
+# ---------- HTTP routes (served by the always-on service: python -m pinaxium.service) ----------
+
+def _local_host_ok(request: Request) -> bool:
+    """Only requests addressed to this machine by its loopback name: a page on another site that rebinds its
+    DNS to 127.0.0.1 still sends its own Host header and is refused."""
+    host = (request.headers.get("host") or "").lower()
+    return host in {f"127.0.0.1:{cfg.service_port}", f"localhost:{cfg.service_port}"}
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def http_health(request: Request):
+    return JSONResponse({"service": "pinaxium", "version": __version__, "engine": cfg.base_url})
+
+
+async def _serve_image(request: Request, kind: str):
+    if not _local_host_ok(request):
+        return PlainTextResponse("forbidden host", status_code=403)
+    project = request.path_params["project"]
+    key = request.path_params["key"]
+    try:
+        uri = draft_uri(project, key) if kind == "draft" else final_uri(project, key)
+        found_kind, _, path, _ = projects.locate(uri)          # finals resolve wherever their file now is
+    except ProjectError as e:
+        return PlainTextResponse(str(e), status_code=404)
+    if found_kind != kind:
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+@mcp.custom_route("/files/{project}/drafts/{key}", methods=["GET"], include_in_schema=False)
+async def http_draft(request: Request):
+    return await _serve_image(request, "draft")
+
+
+@mcp.custom_route("/files/{project}/finals/{key}", methods=["GET"], include_in_schema=False)
+async def http_final(request: Request):
+    return await _serve_image(request, "final")
 
 
 def main() -> None:
-    anyio.run(_serve_stdio)
+    mcp.run("stdio")
 
 
 if __name__ == "__main__":

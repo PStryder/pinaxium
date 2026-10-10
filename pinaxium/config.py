@@ -32,6 +32,7 @@ FIELDS: dict[str, tuple[str, type, object]] = {
     "default_model": ("PINAXIUM_DEFAULT_MODEL", str, None),
     "finals_dir": ("PINAXIUM_FINALS_DIR", str, None),
     "draft_retention_days": ("PINAXIUM_DRAFT_RETENTION_DAYS", float, 0.0),
+    "service_port": ("PINAXIUM_SERVICE_PORT", int, 8190),
 }
 WINDOWS = os.name == "nt"
 
@@ -225,6 +226,7 @@ def render_config(values: dict, notes: list[str]) -> str:
         "default_model": "model id used when a request names none (see list_models)",
         "finals_dir": "where finalize_image copies finished images, one folder per project",
         "draft_retention_days": "send unfinalized drafts older than this to the recycle bin; 0 = never",
+        "service_port": "port of the always-on Pinaxium service (MCP at /mcp, image links at /files), on 127.0.0.1",
     }
     for key in FIELDS:
         lines.append(f"# {help_[key]}")
@@ -282,12 +284,18 @@ class Config:
     default_model: str | None
     finals_dir: str
     draft_retention_days: float
+    service_port: int
     config_file: str
     sources: dict = field(default_factory=dict, compare=False)
 
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def service_url(self) -> str:
+        """The always-on Pinaxium service (python -m pinaxium.service): MCP at /mcp, image links at /files."""
+        return f"http://127.0.0.1:{self.service_port}"
 
     @property
     def models_dir(self) -> str:
@@ -371,7 +379,8 @@ def load(create: bool = True) -> Config:
                   comfy_args=tuple(values["comfy_args"] or ()), host=values["host"], port=values["port"],
                   idle_minutes=values["idle_minutes"], start_timeout_s=values["start_timeout_s"],
                   state_dir=values["state_dir"], default_model=values["default_model"],
-                  finals_dir=values["finals_dir"], draft_retention_days=values["draft_retention_days"], config_file=path,
+                  finals_dir=values["finals_dir"], draft_retention_days=values["draft_retention_days"],
+                  service_port=values["service_port"], config_file=path,
                   sources=sources)
 
 

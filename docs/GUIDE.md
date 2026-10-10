@@ -105,6 +105,7 @@ Finalizing the same draft again returns its existing final. Finals are never del
 | Finals | `<finals_dir>/<project>/<id>.png` (your Pictures folder's `Pinaxium` by default) | `pinaxium://projects/<project>/finals/<id>` |
 | A project's record | `project.json` (drafts) and `finals.json` (finals) | `pinaxium://projects/<project>` |
 
+- **Links the user can click:** every render reply has an `open:` line, a `file:///` link to the file on this machine's disk. While the always-on service runs it also has a `browser:` line, an `http://127.0.0.1:8190/files/...` link that opens in any browser on this machine, including where `file://` links are blocked. Listings, `finalize_image` and `get_final` carry the same as `file_uri` and `local_url`. A final's links always point to where its file is now.
 - **From a reply:** the resource link, or the path in the text block.
 - **Later:** `list_projects`, `list_drafts` and `list_finals`, or the client's resource list (finals first, then the newest drafts, 500 in all). All of them work while the engine is stopped.
 - **Previews are downscaled:** at most 1024 px in render replies, and up to 1568 px with `view_image` and `get_final`. Read the URI as a resource for the original.

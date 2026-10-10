@@ -44,7 +44,8 @@ When no config file exists, the first use detects ComfyUI and writes one, with a
 | `state_dir` | `PINAXIUM_STATE_DIR` | platform data folder | Logs, lock and caches (see below). Windows: `%LOCALAPPDATA%\pinaxium\state`; macOS: `~/Library/Application Support/pinaxium/state`; Linux: `$XDG_STATE_HOME/pinaxium` |
 | `default_model` | `PINAXIUM_DEFAULT_MODEL` | first usable model | Model id used when a request names none |
 | `finals_dir` | `PINAXIUM_FINALS_DIR` | `<Pictures>/Pinaxium` | Where finals are kept, one folder per project. On Windows "Pictures" is the shell's known Pictures folder, so OneDrive redirection is followed. |
-| `draft_retention_days` | `PINAXIUM_DRAFT_RETENTION_DAYS` | `0` (never) | Send unfinalized drafts older than this to the recycle bin; checked hourly while a client is connected |
+| `draft_retention_days` | `PINAXIUM_DRAFT_RETENTION_DAYS` | `0` (never) | Send unfinalized drafts older than this to the recycle bin; checked hourly while the service (or any client) runs |
+| `service_port` | `PINAXIUM_SERVICE_PORT` | `8190` | Port of the always-on service on 127.0.0.1: MCP at `/mcp`, image links at `/files/...` |
 
 For testing only, `PINAXIUM_TRASH_DIR` makes deletions move files into that folder instead of the OS recycle bin.
 
@@ -52,21 +53,50 @@ For testing only, `PINAXIUM_TRASH_DIR` makes deletions move files into that fold
 
 Environment variables override the file key by key. One exception keeps things consistent: if `PINAXIUM_COMFY_DIR` is set but `PINAXIUM_BASE_DIR` / `PINAXIUM_COMFY_PYTHON` are not, those two are derived from the environment's install, not taken from the file (which may describe a different install).
 
+## The always-on service
+
+`python -m pinaxium.service` runs Pinaxium as one long-lived process on `127.0.0.1:<service_port>` (default 8190):
+
+| Path | What |
+|---|---|
+| `/mcp` | MCP over streamable HTTP, for any local MCP client |
+| `/files/<project>/drafts/<file>`, `/files/<project>/finals/<id>` | The images, so the `local_url` links in results open in a browser |
+| `/health` | Liveness |
+
+**What it holds:**
+- **GPU memory:** none. ComfyUI still starts on the first render and stops when idle.
+- **ComfyUI dependence:** none for serving MCP metadata and existing images. The image archive stays available with GPU inference completely shut down.
+
+**What it accepts:** only requests addressed to `127.0.0.1`/`localhost` on its port. A web page that rebinds a domain to 127.0.0.1 is refused, and so are MCP requests from pages on other origins.
+
+| Command | Effect |
+|---|---|
+| `python -m pinaxium.service install` | Windows: start at logon (Task Scheduler, restarted if it fails) and start now |
+| `python -m pinaxium.service status` | Task state, and whether the service answers |
+| `python -m pinaxium.service restart` / `uninstall` | As named |
+| `python -m pinaxium.service run` | Foreground; what the task runs. On Linux/macOS, run this from a systemd user unit or a launchd agent. |
+
+Its log is `service.log` in `state_dir`. After updating Pinaxium, run `restart` so the service loads the new code.
+
 ## Registering with MCP clients
 
-Pinaxium is a stdio MCP server. Run it with its own environment's Python and `PYTHONPATH` set to the cloned folder (`<pinaxium>` below):
+Clients reach Pinaxium in one of two ways, and both share the same engine, projects and images:
 
-| Platform | Command |
+| Client can… | Use |
 |---|---|
-| Windows | `<pinaxium>\.venv\Scripts\python.exe -m pinaxium.server` |
-| Linux / macOS | `<pinaxium>/.venv/bin/python -m pinaxium.server` |
+| connect to an HTTP MCP server (URL) | `http://127.0.0.1:8190/mcp`: the always-on service |
+| only launch a server itself (stdio) | `<pinaxium>\.venv\Scripts\python.exe -m pinaxium.server` with `PYTHONPATH=<pinaxium>` (Linux/macOS: `<pinaxium>/.venv/bin/python`) |
 
-**Claude Code:**
+**Claude Code** (HTTP):
 ```
-claude mcp add pinaxium --scope user -e PYTHONPATH=<pinaxium> -- <pinaxium>\.venv\Scripts\python.exe -m pinaxium.server
+claude mcp add --transport http --scope user pinaxium http://127.0.0.1:8190/mcp
 ```
 
-**Claude Desktop:** add the server to `claude_desktop_config.json` (on Windows, `%APPDATA%\Claude\`), then restart Desktop:
+**ChatGPT:**
+- **If your app can add a local MCP server**, use the URL above, or the stdio command if it only offers STDIO.
+- **If it only reaches servers on the internet**, as ChatGPT's cloud connectors do, a local URL is unreachable. That needs a tunnel, which Pinaxium deliberately doesn't set up.
+
+**Claude Desktop** (stdio): its config file can only launch servers. Add the server to `claude_desktop_config.json` (on Windows, `%APPDATA%\Claude\`), then restart Desktop:
 ```json
 {
   "mcpServers": {
@@ -79,9 +109,9 @@ claude mcp add pinaxium --scope user -e PYTHONPATH=<pinaxium> -- <pinaxium>\.ven
 }
 ```
 
-**Other clients:** use the same command and environment. Settings can also be passed as `PINAXIUM_*` variables in the server's `env`.
+**Other clients:** use the URL if they support HTTP, otherwise the stdio command. For stdio, settings can also be passed as `PINAXIUM_*` variables in the server's `env`.
 
-Several clients can be registered at once. Each starts its own small server process, and all of them share one engine.
+Any number of clients can be connected at once. HTTP clients share the service; each stdio client starts its own small server process. All of them share one engine.
 
 ## Files Pinaxium keeps
 
@@ -97,6 +127,7 @@ In `state_dir`:
 | `supervisor.log` | The supervisor's own messages (also `pinaxium://logs/supervisor`) |
 | `scan_cache.json` | Model detection results, keyed by file path, size and modification time |
 | `spawn_env.json` | `PINAXIUM_*` settings handed to the supervisor at start-up |
+| `service.log` | The always-on service's output |
 | `jobs/<job id>.json` | What a render was (project, prompt, model, ...) until its images are recorded; it outlives the call when a render exceeds `max_wait_s` |
 
 These can all be deleted while the engine is stopped. Pinaxium recreates them as needed.

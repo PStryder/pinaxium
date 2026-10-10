@@ -81,9 +81,18 @@ class ModelList(BaseModel):
     other_files: list[OtherFile] = Field(description="Model files that aren't part of a usable model")
 
 
+LINK_DESCRIPTIONS = {
+    "file_uri": "file:/// link to the image on this machine's disk: give it to the user as a clickable link",
+    "local_url": "http://127.0.0.1 link served by the Pinaxium service, opens in any browser on this machine; "
+                 "null when the service isn't running",
+}
+
+
 class DraftEntry(BaseModel):
     uri: str = Field(description="The draft's URI, pinaxium://projects/<project>/drafts/<file>: readable as a "
                                  "resource, usable wherever an image is accepted")
+    file_uri: str = Field(description=LINK_DESCRIPTIONS["file_uri"])
+    local_url: str | None = Field(None, description=LINK_DESCRIPTIONS["local_url"])
     path: str = Field(description="Full path of the PNG")
     project: str = Field(description="Project the draft belongs to")
     final_uri: str | None = Field(None, description="If this draft was finalized: its final's URI")
@@ -104,6 +113,8 @@ class FinalEntry(BaseModel):
     id: str = Field(description="The final's permanent id within its project, e.g. portrait-001")
     uri: str = Field(description="Permanent URI, pinaxium://projects/<project>/finals/<id>: readable as a resource, "
                                  "usable wherever an image is accepted")
+    file_uri: str | None = Field(None, description=LINK_DESCRIPTIONS["file_uri"] + " (null if the file can't be found)")
+    local_url: str | None = Field(None, description=LINK_DESCRIPTIONS["local_url"])
     project: str = Field(description="Project the final belongs to")
     title: str | None = Field(None, description="Title given at finalize_image")
     description: str | None = Field(None, description="Description given at finalize_image (by default the prompt)")
@@ -148,6 +159,8 @@ class FinalizeResult(BaseModel):
     project: str = Field(description="Project of the final")
     id: str = Field(description="The final's permanent id")
     uri: str = Field(description="The final's permanent URI")
+    file_uri: str = Field(description=LINK_DESCRIPTIONS["file_uri"])
+    local_url: str | None = Field(None, description=LINK_DESCRIPTIONS["local_url"])
     path: str = Field(description="Where the final's file is")
     already_final: bool = Field(description="True if this draft had already been finalized (nothing copied; "
                                             "the existing final is returned)")

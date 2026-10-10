@@ -34,12 +34,16 @@ An MCP server that gives Claude (Desktop, Code, or any MCP client) local image g
    ```
    The last command finds ComfyUI, writes the config file, and prints `ready` or what to fix. It is optional, because the first use does the same.
 2. **Get models.** Download a supported family's files into ComfyUI's model folders (table below).
-3. **Register the server.** Use the command `<pinaxium>/.venv/Scripts/python.exe -m pinaxium.server` (`.venv/bin/python` on Linux/macOS) with `PYTHONPATH=<pinaxium>`. For Claude Code:
+3. **Start the always-on service** (Windows: at every logon):
    ```
-   claude mcp add pinaxium --scope user -e PYTHONPATH=<pinaxium> -- <pinaxium>/.venv/Scripts/python.exe -m pinaxium.server
+   uv run python -m pinaxium.service install
    ```
-   For Claude Desktop and other clients, see [CONFIGURATION.md](docs/CONFIGURATION.md#registering-with-mcp-clients).
-4. **Ask your assistant for an image.**
+   It serves MCP at `http://127.0.0.1:8190/mcp` to any local client, and the images behind clickable links. It holds no GPU memory; ComfyUI starts only when something is rendered.
+4. **Connect your clients.**
+   - **Claude Code:** `claude mcp add --transport http --scope user pinaxium http://127.0.0.1:8190/mcp`
+   - **Clients that can only launch a server** (Claude Desktop): use the stdio command `<pinaxium>/.venv/Scripts/python.exe -m pinaxium.server` with `PYTHONPATH=<pinaxium>`.
+   - See [CONFIGURATION.md](docs/CONFIGURATION.md#registering-with-mcp-clients), including ChatGPT.
+5. **Ask your assistant for an image.** It gives you a link to open it: a `file:///` link to the file on your disk, and a `http://127.0.0.1:8190/...` link for the browser.
 
 ## Supported models
 
