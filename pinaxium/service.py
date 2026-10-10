@@ -83,18 +83,33 @@ def _task(action: str, **extra) -> str:
     return r.stdout.strip()
 
 
-def _answering(port: int) -> str:
+def _version_answering(port: int) -> str | None:
     try:
-        r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2)
-        return f"answering on http://127.0.0.1:{port}/mcp (version {r.json().get('version')})"
+        return httpx.get(f"http://127.0.0.1:{port}/health", timeout=2).json().get("version")
     except Exception:
-        return f"not answering on port {port}"
+        return None
+
+
+def _answering(port: int) -> str:
+    v = _version_answering(port)
+    return f"answering on http://127.0.0.1:{port}/mcp (version {v})" if v else f"not answering on port {port}"
+
+
+def _wait(condition, seconds: float) -> bool:
+    import time
+    end = time.time() + seconds
+    while time.time() < end:
+        if condition():
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "status"
     if cmd == "run":
         return run()
+    from pinaxium import __version__
     from pinaxium.config import load
     port = load().service_port
     if cmd == "install":
@@ -104,18 +119,19 @@ def main(argv: list[str]) -> int:
         print(_task("uninstall"))
     elif cmd == "restart":
         _task("stop")
+        # stopping returns before the process has exited: wait until the old service is really gone
+        if not _wait(lambda: _version_answering(port) is None, 30):
+            raise SystemExit("the old service didn't stop within 30 s")
         print(_task("start"))
     elif cmd == "status":
         print(_task("status") if os.name == "nt" else "no task (not Windows)")
     else:
         print(__doc__)
         return 2
-    import time
     if cmd in ("install", "restart"):
-        for _ in range(120):                    # starting takes a while (imports, model scan): up to 60 s
-            if "answering on" in _answering(port):
-                break
-            time.sleep(0.5)
+        # starting takes a while (imports, model scan): wait for this version, up to 60 s
+        if not _wait(lambda: _version_answering(port) == __version__, 60):
+            print(f"warning: the service isn't answering as version {__version__} yet; see service.log")
     print(_answering(port))
     return 0
 
