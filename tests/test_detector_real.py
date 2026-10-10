@@ -1,15 +1,17 @@
-"""The real detector (ComfyUI's detection code in ComfyUI's venv) on the real model files.
-Skipped when ComfyUI or a file isn't installed. Slow (~15 s ComfyUI import)."""
+"""The real detector (ComfyUI's detection code in ComfyUI's venv) on the real model files, with the ComfyUI
+install found by auto-detection (nothing is written). Skipped when no ComfyUI or no model file is found.
+Slow (~15 s ComfyUI import)."""
 
 import os
 
 import pytest
 
-from pinaxium.config import load
+from pinaxium.config import detect, load
 from pinaxium.registry import comfy_detector
 
-CFG = load()
-M = os.path.join(CFG.comfy_dir, "models")
+INSTALLS = [i for i in detect() if i.comfy_python]
+REAL = INSTALLS[0] if INSTALLS else None
+M = os.path.join(REAL.base_dir, "models") if REAL else ""
 
 EXPECTED = [   # (folder, file, kind, arch)
     ("diffusion_models", "qwen_image_2.1_int8_convrot.safetensors", "diffusion", "QwenImage21"),
@@ -35,13 +37,18 @@ def present(rows):
     return [r for r in rows if os.path.isfile(os.path.join(M, r[0], r[1]))]
 
 
-@pytest.mark.skipif(not os.path.isfile(CFG.comfy_python), reason="ComfyUI venv not installed")
-def test_real_files_detected_as_expected():
+@pytest.mark.skipif(REAL is None, reason="no ComfyUI install with a Python interpreter found")
+def test_real_files_detected_as_expected(monkeypatch):
     rows = present(EXPECTED + CROSS)
     if not rows:
         pytest.skip("no model files present")
+    monkeypatch.setenv("PINAXIUM_COMFY_DIR", REAL.comfy_dir)
+    monkeypatch.setenv("PINAXIUM_COMFY_PYTHON", REAL.comfy_python)
+    monkeypatch.setenv("PINAXIUM_BASE_DIR", REAL.base_dir)
+    cfg = load(create=False)
+    assert not cfg.problems()
     items = [{"path": os.path.join(M, f, n), "kind": k} for f, n, k, _ in rows]
-    results = comfy_detector(CFG)(items)
+    results = comfy_detector(cfg)(items)
     for (f, n, k, arch), res in zip(rows, results):
         assert res["error"] is None, f"{n} as {k}: {res['error']}"
         assert res["arch"] == arch, f"{n} as {k}: got {res['arch']}, expected {arch}"

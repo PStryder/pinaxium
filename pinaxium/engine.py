@@ -81,15 +81,21 @@ class Engine:
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"WMI spawn failed ({r.returncode}): {r.stderr.strip()[-500:]}; falling back to a child process\n")
         cmd = [sys.executable, "-m", "pinaxium.supervisor", "--env-file", env_file, "--log", log]
-        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
-        subprocess.Popen(cmd, cwd=PROJECT_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags)
+        kw = dict(cwd=PROJECT_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  close_fds=True)
+        if os.name == "nt":
+            subprocess.Popen(cmd, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, **kw)
+        else:   # own session: closing the client's process group doesn't take the shared engine with it
+            subprocess.Popen(cmd, start_new_session=True, **kw)
 
     async def ensure_ready(self, progress: Progress = _noop) -> str:
         """Start the engine if needed and wait until ComfyUI answers. Returns 'managed' or 'external'."""
         self.touch_activity()
         if await self.api_up():
             return "managed" if self.managed() else "external"
+        problems = [] if os.environ.get("PINAXIUM_ENGINE_CMD") else self.cfg.problems()
+        if problems:
+            raise EngineError("can't start the engine: " + "; ".join(problems))
         spawned_at = time.time()
         if not self.managed():
             self._spawn_supervisor()
@@ -157,6 +163,10 @@ class Engine:
             out.update({"status": "starting" if starting else "stopped", "ready_to_render": False})
             if state.get("reason"):
                 out["last_stop_reason"] = state["reason"]
+        out["config_file"] = self.cfg.config_file
+        problems = self.cfg.problems()
+        if problems and not up:
+            out["setup_problems"] = problems
         return out
 
     # ---------- jobs ----------
@@ -198,8 +208,7 @@ class Engine:
             err = "; ".join(f"{m.get('node_type')}: {m.get('exception_message', '').strip()}" for m in msgs)
             return {"state": "error", "images": [], "error": err or "execution failed"}
         images = []
-        dirs = {"output": self.cfg.output_dir, "temp": os.path.join(self.cfg.comfy_dir, "temp"),
-                "input": os.path.join(self.cfg.comfy_dir, "input")}
+        dirs = {"output": self.cfg.output_dir, "temp": self.cfg.temp_dir, "input": self.cfg.input_dir}
         for node_out in hist.get("outputs", {}).values():
             for im in node_out.get("images", []):
                 if im.get("type") in dirs:

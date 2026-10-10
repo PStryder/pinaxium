@@ -25,6 +25,9 @@ class EngineStatus(BaseModel):
     idle_minutes: float | None = Field(None, description="Minutes since the last request")
     last_stop_reason: str | None = None
     note: str | None = None
+    config_file: str | None = Field(None, description="Settings file in use (see `python -m pinaxium.config`)")
+    setup_problems: list[str] | None = Field(None, description="What prevents the engine from starting, and how to "
+                                                               "fix it")
 
 
 class ModelDefaults(BaseModel):

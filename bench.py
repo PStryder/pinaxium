@@ -6,7 +6,7 @@ Uses the same registry, workflow builders and engine as the MCP server. Writes r
 results/bench-<stamp>.md and a contact sheet of the cold renders.
 
 Caveat recorded in the report: "cold" means not in VRAM and not in ComfyUI's cache. The model files may
-still be in the Windows file cache (64 GB RAM), so a first load after a reboot can be slower.
+still be in the OS file cache, so a first load after a reboot can be slower.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from pinaxium.engine import Engine
 from pinaxium.registry import Registry
 
 PROMPT = ('A rainy neon-lit street market at night in Kowloon, a noodle stall with a hand-painted sign reading '
-          '"HEXYLAB NOODLES", steam rising, reflections on wet pavement, people with umbrellas, cinematic photo')
+          '"PINAXIUM NOODLES", steam rising, reflections on wet pavement, people with umbrellas, cinematic photo')
 GB = 1024 ** 3
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -188,7 +188,7 @@ def markdown(r: dict) -> str:
         unload = f"{m['unload_s']:.1f} s" if m["unload_s"] >= 0 else "> 30 s"
         lines.append(f"| {m['id']} | {m['cold']['steps']} | {m['cold']['seconds']:.1f} s | {m['load_estimate_s']:.1f} s | "
                      f"{m['warm_median_s']:.1f} s | {big} | {peak:.1f} GB | {m['resident_after_gb']:.1f} GB | {unload} |")
-    lines += ["", "Cold = not in VRAM and not in ComfyUI's cache; the files may still be in the Windows file cache, "
+    lines += ["", "Cold = not in VRAM and not in ComfyUI's cache; the files may still be in the OS file cache, "
               "so a first load after a reboot can take longer. Load (est.) = cold minus warm median. "
               "VRAM figures are whole-GPU memory above the idle engine's baseline, sampled every 0.2 s. "
               "Unload = POST /free until GPU memory is back within 0.5 GB of that baseline."]

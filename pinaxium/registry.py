@@ -135,14 +135,21 @@ Detector = Callable[[list[dict]], list[dict]]
 
 
 def comfy_detector(cfg: Config) -> Detector:
+    """Results with "transient": True describe a broken setup, not the file, and are never cached."""
     def detect(items: list[dict]) -> list[dict]:
-        r = subprocess.run([cfg.comfy_python, DETECTOR], input=json.dumps(items), capture_output=True,
-                           text=True, cwd=cfg.comfy_dir, timeout=300,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        problems = cfg.problems()
+        if problems:
+            return [{"arch": None, "error": "; ".join(problems), "transient": True} for _ in items]
+        try:
+            r = subprocess.run([cfg.comfy_python, DETECTOR], input=json.dumps(items), capture_output=True,
+                               text=True, cwd=cfg.comfy_dir, timeout=300,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return [{"arch": None, "error": f"detector failed: {e}", "transient": True} for _ in items]
         marker = r.stdout.rfind("@@RESULT@@")
         if marker < 0:
             tail = (r.stderr or r.stdout)[-500:]
-            return [{"arch": None, "error": f"detector failed: {tail}"} for _ in items]
+            return [{"arch": None, "error": f"detector failed: {tail}", "transient": True} for _ in items]
         return json.loads(r.stdout[marker + len("@@RESULT@@"):])
     return detect
 
@@ -169,7 +176,7 @@ class Registry:
         os.replace(tmp, self.cache_path)
 
     def scan_files(self) -> list[FileInfo]:
-        root = os.path.join(self.cfg.comfy_dir, "models")
+        root = self.cfg.models_dir
         found = []
         for folder, kind in FOLDERS.items():
             d = os.path.join(root, folder)
@@ -191,7 +198,8 @@ class Registry:
             for (k, _), res in zip(todo, self.detect([item for _, item in todo])):
                 cache[k] = res
             live = {key(p, kind, size, mt) for p, _, kind, size, mt in found}
-            self._save_cache({k: v for k, v in cache.items() if k in live})
+            # a broken setup (transient) is reported now but not remembered: fixing it fixes the listing
+            self._save_cache({k: v for k, v in cache.items() if k in live and not v.get("transient")})
         out = []
         for p, folder, kind, size, mt in found:
             res = cache.get(key(p, kind, size, mt), {"arch": None, "error": None})
@@ -228,7 +236,7 @@ class Registry:
         models = self.models()
         usable = [m for m in models if m.available]
         if model_id is None:
-            wanted = os.environ.get("PINAXIUM_DEFAULT_MODEL")
+            wanted = self.cfg.default_model
             if wanted:
                 model_id = wanted
             elif usable:

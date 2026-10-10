@@ -65,7 +65,7 @@ mcp = PinaxiumServer(
     lifespan=lifespan,
     middleware=[notifier.middleware],
     instructions=(
-        "Generates and edits images locally on the user's RTX 4080 through ComfyUI. Call list_models to see "
+        "Generates and edits images locally on this machine's GPU through ComfyUI. Call list_models to see "
         "the usable models (discovered automatically from the ComfyUI model folders) and pass a model id to "
         "generate_image / edit_image; without one the default is used. The engine is stopped while idle and "
         "starts on the first request (cold start: engine boot plus model load, up to a minute or two). "

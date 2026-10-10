@@ -99,12 +99,23 @@ def test_detection_by_content_not_name(setup):
     assert reg.get("renamed_model").available
 
 
-def test_default_is_base_before_turbo_and_env_override(setup, monkeypatch):
+def test_default_is_base_before_turbo_and_configured_default_wins(setup, monkeypatch):
     reg, put, _ = setup
     full_qwen(put)
     assert reg.get(None).id == "qwen_image_2.1_int8_convrot"
     monkeypatch.setenv("PINAXIUM_DEFAULT_MODEL", "qwen_image_2.1_turbo_int8_convrot")
-    assert reg.get(None).id == "qwen_image_2.1_turbo_int8_convrot"
+    assert Registry(load(), reg.detect).get(None).id == "qwen_image_2.1_turbo_int8_convrot"
+
+
+def test_setup_failures_are_reported_but_not_cached(setup):
+    reg, put, _ = setup
+    put("diffusion_models", "qwen_image_2.1_int8_convrot.safetensors")
+    broken = Registry(reg.cfg, lambda items: [{"arch": None, "error": "comfy_python missing", "transient": True}
+                                              for _ in items])
+    (f,) = broken.scan_files()
+    assert f.error == "comfy_python missing"
+    (f,) = reg.scan_files()                              # setup fixed: detected now, not the remembered failure
+    assert f.arch == "QwenImage21" and f.error is None
 
 
 def test_unknown_model_id(setup):

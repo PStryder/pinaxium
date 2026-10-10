@@ -98,8 +98,11 @@ def comfy_command(cfg: Config) -> list[str]:
     override = os.environ.get("PINAXIUM_ENGINE_CMD")      # tests substitute a fake engine
     if override:
         return json.loads(override)
-    return [cfg.comfy_python, "main.py", "--listen", cfg.host, "--port", str(cfg.port),
-            "--disable-auto-launch", "--preview-method", "none"]
+    cmd = [cfg.comfy_python, "main.py", "--listen", cfg.host, "--port", str(cfg.port),
+           "--disable-auto-launch", "--preview-method", "none"]
+    if os.path.normcase(os.path.abspath(cfg.base_dir)) != os.path.normcase(os.path.abspath(cfg.comfy_dir)):
+        cmd += ["--base-directory", cfg.base_dir]          # data kept apart from the code (ComfyUI Desktop)
+    return cmd + list(cfg.comfy_args)
 
 
 def stop_process(proc: subprocess.Popen) -> None:
@@ -125,6 +128,10 @@ def run(cfg: Config) -> int:
             os.remove(stop_flag)
         if api_get(cfg, "/system_stats") is not None:
             reason = f"port {cfg.port} is already served by another process"
+            return 1
+        problems = [] if os.environ.get("PINAXIUM_ENGINE_CMD") else cfg.problems()
+        if problems:
+            reason = "; ".join(problems)
             return 1
         log = open(cfg.state_path("comfyui.log"), "w", encoding="utf-8", errors="replace")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0

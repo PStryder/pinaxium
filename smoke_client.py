@@ -15,7 +15,7 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROMPT = 'A cozy bookshop window at dusk, warm light, a hand-painted sign reading "HEXYLAB BOOKS", rain on the glass'
+PROMPT = 'A cozy bookshop window at dusk, warm light, a hand-painted sign reading "PINAXIUM BOOKS", rain on the glass'
 
 
 def show(res) -> str:
