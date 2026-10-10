@@ -2,183 +2,62 @@
 
 An MCP server that gives Claude (Desktop, Code, or any MCP client) local image generation and editing on your own GPU, through [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
 
-The engine holds no GPU memory while idle:
-- the first request starts ComfyUI, and models load into VRAM on the first render;
-- after 10 minutes with no requests and no running job, it shuts ComfyUI down and frees all GPU memory.
+- **Holds no GPU memory while idle.** The first request starts ComfyUI; after 10 idle minutes it is shut down again. One engine is shared by all connected clients.
+- **Finds your models by itself.** Files in ComfyUI's model folders are identified by ComfyUI's own detection code and matched with their text encoder and VAE. Each family uses its official ComfyUI workflow.
+- **Covers the whole loop:** text-to-image, instruction edits and multi-image composition, full-size results as MCP resources, a crop viewer for checking detail, and engine status you can subscribe to.
+- **Sets itself up.** On first run it detects your ComfyUI install (Desktop, portable or a clone) and writes a commented config file.
 
-## How it fits together
+## Documentation
 
-```
-Claude Desktop ─┐  (each client spawns its own stdio server)
-Claude Code  ───┼─> pinaxium.server ──HTTP──> ComfyUI (127.0.0.1:8188)
-                │          │ wakes                    ▲
-                └──────────┴─> pinaxium.supervisor ┘  (one, detached, shared)
-```
+| Document | For |
+|---|---|
+| [docs/GUIDE.md](docs/GUIDE.md) | Using it: workflow, choosing models, prompting, editing, results, the engine, troubleshooting, FAQ |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Every tool, parameter, result field and resource, generated from the server |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Settings, auto-detection, registering with MCP clients, the files Pinaxium keeps |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, adding a model family, tests, tooling, releasing |
+| [CHANGELOG.md](CHANGELOG.md) | What changed |
 
-- **`supervisor.py`** owns the single ComfyUI process. It runs detached, so it outlives the client that woke it, and any client can use it.
-  - It shuts the engine down once nothing has happened for the idle period. "Something happening" means a client request or a job in ComfyUI's queue.
-  - Single ownership is enforced by `engine.lock` in the state folder, whose mtime is a heartbeat. A lock left by a crashed supervisor goes stale after 30 s and is taken over.
-  - On Windows the supervisor is started through WMI. MCP clients run their servers in a job object that kills its processes when the session closes, and starting through WMI escapes it. On other platforms it is started in its own session.
-- **`engine.py`** is the client side. It wakes the supervisor and talks to ComfyUI's HTTP API.
-- **External ComfyUI:** if a ComfyUI you started yourself is already on the configured port, Pinaxium uses it and never shuts it down.
-- **`registry.py` + `comfy_detect.py`** discover models automatically (see below).
-- **`workflows.py`** has one graph builder per model family, each copied from Comfy-Org's official template for that family.
+## Quick start
 
-## Installation
+**Requirements:**
+- ComfyUI 0.37 or later: the Desktop app, the Windows portable build, or a clone with its own venv;
+- a GPU ComfyUI can use;
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
-1. **ComfyUI.** Any of these works: a git clone with its own venv, the Windows portable build, or ComfyUI Desktop. It must be recent enough to support your models; Qwen-Image 2.1 needs ComfyUI 0.37 or later.
-2. **Models.** Put them in ComfyUI's model folders as usual. The [supported families](#model-discovery) are found automatically. Comfy-Org's Hugging Face repackages have the exact files: `Comfy-Org/Qwen-Image-2.1`, `Comfy-Org/z_image_turbo`, `Comfy-Org/vae-text-encorder-for-flux-klein-4b`.
-3. **Pinaxium.** It needs Python 3.12+ and [uv](https://docs.astral.sh/uv/):
+1. **Install Pinaxium:**
    ```
    git clone https://github.com/PStryder/pinaxium.git
    cd pinaxium
    uv sync
-   uv run python -m pinaxium.config --init     # detect ComfyUI, write the config file, check it's ready
+   uv run python -m pinaxium.config --init
    ```
-   `--init` is optional; the config file is also created automatically on first use.
-4. **Register the server with your client.** Use absolute paths; `<pinaxium>` is where you cloned it. On Windows the interpreter is `<pinaxium>\.venv\Scripts\python.exe`; elsewhere it is `<pinaxium>/.venv/bin/python`.
-   - **Claude Code:**
-     `claude mcp add pinaxium --scope user -e PYTHONPATH=<pinaxium> -- <pinaxium>/.venv/Scripts/python.exe -m pinaxium.server`
-   - **Claude Desktop:** add this to `claude_desktop_config.json` (on Windows, `%APPDATA%\Claude\`), then restart Desktop:
-     ```json
-     "mcpServers": {
-       "pinaxium": {
-         "command": "<pinaxium>/.venv/Scripts/python.exe",
-         "args": ["-m", "pinaxium.server"],
-         "env": {"PYTHONPATH": "<pinaxium>"}
-       }
-     }
-     ```
+   The last command finds ComfyUI, writes the config file, and prints `ready` or what to fix. It is optional, because the first use does the same.
+2. **Get models.** Download a supported family's files into ComfyUI's model folders (table below).
+3. **Register the server.** Use the command `<pinaxium>/.venv/Scripts/python.exe -m pinaxium.server` (`.venv/bin/python` on Linux/macOS) with `PYTHONPATH=<pinaxium>`. For Claude Code:
+   ```
+   claude mcp add pinaxium --scope user -e PYTHONPATH=<pinaxium> -- <pinaxium>/.venv/Scripts/python.exe -m pinaxium.server
+   ```
+   For Claude Desktop and other clients, see [CONFIGURATION.md](docs/CONFIGURATION.md#registering-with-mcp-clients).
+4. **Ask your assistant for an image.**
 
-## Configuration
+## Supported models
 
-Settings come from three places, highest priority first:
-1. environment variables;
-2. the config file;
-3. built-in defaults and auto-detection.
+Each family's workflow is copied from Comfy-Org's official template.
+- **Verified with real renders:** Qwen-Image 2.1 base and turbo, Z-Image Turbo, FLUX.2 klein 4B distilled.
+- **Supported but not rendered yet:** the undistilled variants, Z-Image base and klein 4B base. They use their own template's settings.
+- **Everything else:** other model files are listed with the reason they aren't offered, and can still be used through `run_workflow`.
 
-**The config file** is TOML:
-- **Windows:** `%APPDATA%\pinaxium\config.toml`
-- **macOS:** `~/Library/Application Support/pinaxium/config.toml`
-- **Linux:** `~/.config/pinaxium/config.toml`
-- Set `PINAXIUM_CONFIG` to use another location.
-
-**On first use, Pinaxium looks for ComfyUI and writes the file**, with comments explaining each key:
-- **Where it looks:** ComfyUI Desktop's settings, then `ComfyUI` and `ComfyUI_windows_portable` folders in your home, Documents, Desktop and Downloads folders, on every drive root, and one folder below those.
-- **What counts as an install:** a folder with ComfyUI's `main.py` and `comfy/` package. Its Python is the install's `.venv`/`venv`, the portable build's `python_embeded`, or Desktop's venv.
-- **What the file records:** the install it chose, and any others it found.
-- **When no file is written:** if `PINAXIUM_COMFY_DIR` is set, the environment is in charge.
-
-```
-python -m pinaxium.config            # effective settings, where each came from, and whether the engine can start
-python -m pinaxium.config --init     # detect again and rewrite the file
-```
-
-| Key | Environment variable | Default |
-|---|---|---|
-| `comfy_dir` | `PINAXIUM_COMFY_DIR` | detected; ComfyUI's code folder (contains `main.py`) |
-| `comfy_python` | `PINAXIUM_COMFY_PYTHON` | detected next to `comfy_dir` |
-| `base_dir` | `PINAXIUM_BASE_DIR` | `comfy_dir`; the data folder (models, input, output), which differs for ComfyUI Desktop and is passed as `--base-directory` |
-| `comfy_args` | `PINAXIUM_COMFY_ARGS` | none; extra ComfyUI arguments, e.g. `["--lowvram"]` |
-| `host` / `port` | `PINAXIUM_HOST` / `PINAXIUM_PORT` | `127.0.0.1` / `8188` |
-| `idle_minutes` | `PINAXIUM_IDLE_MINUTES` | `10` |
-| `start_timeout_s` | `PINAXIUM_START_TIMEOUT_S` | `180` |
-| `state_dir` | `PINAXIUM_STATE_DIR` | platform data folder (Windows `%LOCALAPPDATA%\pinaxium\state`): logs, engine lock, detection cache |
-| `default_model` | `PINAXIUM_DEFAULT_MODEL` | first usable model |
-
-When `PINAXIUM_COMFY_DIR` overrides the file, `base_dir` and `comfy_python` are taken from that install, not from the file, unless they are overridden too.
-
-**If the setup is incomplete, Pinaxium still starts:**
-- `engine_status` lists the problems (`setup_problems`) and names the config file;
-- tools that need the engine fail with the same explanation.
-
-## Model discovery
-
-Every file in ComfyUI's `models/` folders (`diffusion_models`, `unet`, `checkpoints`, `text_encoders`, `clip`, `vae`, `loras`) is classified by **ComfyUI's own detection code**.
-- It runs in ComfyUI's Python and reads only the safetensors header, using stand-in tensors that hold no data. Renamed files are still recognised.
-- Results are cached by path, size and mtime, so a new file costs one detection pass (about 15 s) on the next `list_models` or render.
-- A broken setup, such as a wrong `comfy_python`, is reported but never cached.
-
-A diffusion file becomes a usable model when its architecture belongs to a supported family and that family's text encoder and VAE are present.
-- **Companion choice:** when several files fit, int8/fp8 text encoders are preferred, and name hints pick between same-shaped VAEs.
-- **Default steps and CFG** come from the file name: turbo, distilled or base.
-
-Supported families. Each builder was copied from the official template and verified with a real render:
-
-| Family | Architecture | Text encoder | VAE | Edit |
+| Family | Files (Comfy-Org repackages on Hugging Face) | Edit | Notes | License |
 |---|---|---|---|---|
-| Qwen-Image 2.1 | `QwenImage21` | Qwen3-VL-8B | Qwen-Image 2.1 VAE | yes (up to 10 refs) |
-| Z-Image | `ZImage` | Qwen3-4B | 16-ch (`ae`) | no |
-| FLUX.2 [klein] 4B | `Flux2`, ≤ 6B | Qwen3-4B | 32-ch FLUX.2 VAE | yes (up to 4 refs) |
+| Qwen-Image 2.1 | `Comfy-Org/Qwen-Image-2.1`: a diffusion model (base and/or turbo), `qwen3vl_8b` text encoder, `qwen_image_2.1_vae` | up to 10 refs | Best quality and lettering, transparency; turbo is several times faster | Qwen Research (non-commercial) |
+| Z-Image | `Comfy-Org/z_image_turbo`: diffusion model, `qwen_3_4b` text encoder, `ae` VAE | no | Fast, clean lettering | Apache-2.0 |
+| FLUX.2 [klein] 4B | `Comfy-Org/vae-text-encorder-for-flux-klein-4b`: `flux-2-klein-4b`, `qwen_3_4b` text encoder, `flux2-vae` | up to 4 refs | Fastest; unreliable lettering | Apache-2.0 |
 
-Anything else is still listed by `list_models` with the reason it isn't offered, such as an unsupported architecture, a missing text encoder, or a LoRA. Those files can still be used through `run_workflow`.
+The diffusion models go in `models/diffusion_models`, the text encoders in `models/text_encoders`, and the VAEs in `models/vae`. Z-Image and klein share the same `qwen_3_4b` text encoder.
 
-## Tools
+## Example benchmark
 
-| Tool | What it does |
-|---|---|
-| `list_models` | Usable models (id, family, capabilities, defaults, files), unusable ones with what's missing, and other files. |
-| `generate_image` | Text to image with `model` (default: the first family's base model), size 256–2048, steps, seed, cfg. |
-| `edit_image` | Instruction-based edit, or a composition from reference images (edit-capable models only). |
-| `run_workflow` | Any ComfyUI API-format graph, for LoRAs, ControlNet or unsupported models. |
-| `view_image` | Look at any local image; `crop=[x,y,w,h]` inspects a detail at full resolution. |
-| `engine_status` | Reports stopped / starting / ready (ready to render), whether it's busy, the queue, VRAM, whether models are loaded, idle time, the config file, and any setup problems. Never starts anything. |
-| `start_engine`, `stop_engine`, `free_vram` | Lifecycle by hand. |
-| `get_job`, `cancel_render`, `list_images` | Long renders and past outputs. |
-
-Images are saved full-size to `<base_dir>/output/pinaxium/`. Results come with a preview of up to 1024 px.
-
-## Resources
-
-| URI | Content |
-|---|---|
-| `pinaxium://images/{filename}` | A saved image at **full size** (PNG). `resources/list` lists the newest 500 with size and last-modified. |
-| `pinaxium://engine/status` | The `engine_status` JSON. Subscribe to it to hear when the engine starts or stops, gets busy, or loads models. |
-| `pinaxium://logs/comfyui` | The last 256 KB of ComfyUI's log, useful for diagnosing failed renders. |
-| `pinaxium://logs/supervisor` | The last 256 KB of the supervisor's log: engine start, idle shutdown, spawn problems. |
-
-**How clients find out about changes:**
-- `generate_image`, `edit_image` and `get_job` return a `resource_link` to each full-size image, next to the preview.
-- New or removed images send `notifications/resources/list_changed`.
-- Changes to a subscribed URI send `notifications/resources/updated`. A background watcher polls every 2 s, and only changes made after it first looks are reported.
-- Both the older `resources/subscribe` protocol (2025-11-25 and earlier) and the newer `subscriptions/listen` (2026-07-28) are supported.
-- Image URIs resolve only to PNGs directly inside `output/pinaxium`. Anything else, including path traversal, is refused.
-
-## Trust boundary: `run_workflow` is open-world
-
-`generate_image`, `edit_image` and the other tools run only fixed, built-in ComfyUI graphs. Those graphs touch nothing but the local ComfyUI and local files, so their `openWorldHint` is false.
-
-`run_workflow` executes whatever graph it is given, and **local hosting does not make that closed-world**:
-- **Partner API nodes:** ComfyUI ships over 40 provider modules of these (`comfy_api_nodes`: OpenAI, Google Gemini and Veo, Anthropic, Kling, Runway and others). They send prompts and images to external paid services, billed to whatever Comfy account is signed in.
-- **Custom nodes** run arbitrary Python with network and file access.
-- **Any workflow** can write or overwrite files through save nodes.
-
-`run_workflow` is therefore marked **open-world and destructive**, and its description says so. Before connecting Pinaxium to an agent that takes untrusted input, consider removing `run_workflow` or restricting it to an allowlist of node types.
-
-**Catalogue (MCP 2025-11-25):**
-- Every tool has a title, a description, and all four annotation hints set explicitly. `openWorldHint` is false everywhere except `run_workflow` (see above).
-- Every parameter has a description, with its range declared in the input schema; out-of-range values are rejected before the call.
-- `engine_status`, `start_engine`, `list_models` and `list_images` declare an `outputSchema` and return `structuredContent` plus a JSON text copy.
-- `tests/test_catalogue.py` checks all of this over a real stdio session.
-- The empty `prompts`/`resources` capabilities are advertised by the SDK's `MCPServer` itself. They're left as they are, which is valid under the spec.
-
-## Platform support
-
-Developed and tested on **Windows 11** with an NVIDIA GPU. Linux and macOS are supported by design but untested:
-- the supervisor is started in a new session instead of through WMI;
-- config paths follow XDG and macOS conventions.
-
-## Tests and tools
-
-```
-uv run pytest                          # hermetic: config, graphs, registry, catalogue, resources, lifecycle
-                                       # vs a fake ComfyUI; plus the real detector if ComfyUI + models are found
-uv run python tools_mutate.py          # every guarantee removed in turn must fail the suite
-uv run python smoke_client.py render   # real MCP stdio session with real renders
-uv run python bench.py                 # boot, load, render, unload timings for every usable model
-```
-
-## Example benchmark (RTX 4080 16 GB, Windows 11, 2026-10-09; `results/bench-20261009-184104.md`)
+RTX 4080 16 GB, Windows 11, 2026-10-09; details in `results/bench-20261009-184104.md`.
 
 Engine boot (ComfyUI start to API ready): 13–14 s. Same prompt for all models, 1024² unless noted.
 
@@ -193,8 +72,14 @@ Notes:
 - **Cold** means not in VRAM and not in ComfyUI's cache. The files were probably in the OS file cache, so a first load after a reboot reads 14–17 GB from disk and takes longer.
 - **Peak VRAM** is whole-GPU memory above the idle engine. ComfyUI fills what is free and offloads the rest.
 
-## Licenses
+## Platform support
 
-Pinaxium itself is MIT-licensed (see `LICENSE`). The models it runs have their own licenses:
+Developed and tested on **Windows 11** with an NVIDIA GPU. Linux and macOS are supported by design but untested. ComfyUI Desktop detection is tested against a simulated install only.
 
-Qwen-Image 2.1 is released under the **Qwen Research License**, which is not a commercial license. Z-Image and FLUX.2 [klein] 4B are Apache-2.0.
+## Security
+
+The built-in tools only touch the local ComfyUI and local files. `run_workflow` runs arbitrary ComfyUI graphs and is **open-world**: partner API nodes call paid external services, and custom nodes can run any code. See [GUIDE.md](docs/GUIDE.md#run_workflow-and-the-trust-boundary) before exposing Pinaxium to untrusted input.
+
+## License
+
+Pinaxium is MIT-licensed (see `LICENSE`). The models it runs have their own licenses (table above).

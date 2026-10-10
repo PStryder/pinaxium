@@ -54,7 +54,7 @@ def bounds(prop: dict):
 
 def test_server_identifies_itself(catalogue):
     init, _, _ = catalogue
-    assert init.server_info.name == "pinaxium" and init.server_info.title
+    assert init.server_info.name == "pinaxium" and init.server_info.title.startswith("Pinaxium")
     assert init.server_info.version == __version__ and __version__
     assert init.instructions
 
@@ -89,6 +89,23 @@ def test_ranges_are_declared(catalogue):
     crop = by_name["view_image"]["crop"]
     arr = next(p for p in crop.get("anyOf", [crop]) if p.get("type") == "array")
     assert (arr.get("minItems"), arr.get("maxItems")) == (4, 4)
+
+
+def test_every_result_field_is_described(catalogue):
+    _, tools, _ = catalogue
+    for t in tools.tools:
+        schema = schema_of(t).get("outputSchema")
+        if not schema:
+            continue
+        for owner, sub in [(t.name, schema)] + list(schema.get("$defs", {}).items()):
+            for name, prop in sub.get("properties", {}).items():
+                assert prop.get("description"), f"{owner}.{name}: no description"
+
+
+def test_descriptions_have_no_source_indentation(catalogue):
+    _, tools, _ = catalogue
+    for t in tools.tools:
+        assert "\n " not in (t.description or ""), f"{t.name}: indented line in description"
 
 
 def test_json_tools_have_output_schemas_and_return_structured_content(catalogue):

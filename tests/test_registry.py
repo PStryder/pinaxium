@@ -71,6 +71,19 @@ def test_discovers_qwen_models_with_variant_defaults(setup):
     assert base.builder == "qwen_image21" and base.capabilities["edit"]
 
 
+def test_models_carry_family_and_variant_notes(setup):
+    from pinaxium.registry import FAMILIES
+    reg, put, _ = setup
+    full_qwen(put)
+    zimage_and_klein(put)
+    assert all(f.notes for f in FAMILIES)
+    turbo = reg.get("qwen_image_2.1_turbo_int8_convrot")
+    assert turbo.notes.startswith("Highest quality") and "turbo" in turbo.notes
+    assert "lettering is unreliable" in reg.get("flux-2-klein-4b").notes.lower()
+    assert "note" not in turbo.defaults                     # the variant note moves to notes, not defaults
+    assert reg.summary()["models"][0]["notes"]
+
+
 def test_prefers_int8_text_encoder_and_ignores_other_architectures(setup):
     reg, put, _ = setup
     full_qwen(put)

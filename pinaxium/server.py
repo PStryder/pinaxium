@@ -7,6 +7,7 @@ Models are discovered by scanning ComfyUI's model folders (registry.py).
 
 # no `from __future__ import annotations`: the SDK reads the Annotated[..., Field(...)] parameter metadata
 import asyncio
+import inspect
 import io
 import logging
 import os
@@ -58,23 +59,61 @@ async def lifespan(_server):
         watcher.cancel()
 
 
+INSTRUCTIONS = """\
+Pinaxium generates and edits images locally on this machine's GPU through ComfyUI. Nothing leaves the machine \
+(except via run_workflow, see below).
+
+Workflow:
+1. list_models: pick a model by its capabilities and notes (speed, lettering quality, editing, transparency). \
+Omit `model` to use the default.
+2. generate_image (text to image) or edit_image (change an image, or compose from several reference images; \
+only models with capabilities.edit).
+3. Check the result before presenting it: the reply carries the saved path, a pinaxium:// resource link to the \
+full-size PNG and a preview. Use view_image with crop to inspect lettering, hands or faces at full resolution.
+4. Iterate: the reply reports the seed; reuse it with a changed prompt for controlled variations, or omit it \
+for new ones.
+
+Prompting: detailed natural-language descriptions work best (subject, setting, style, lighting, composition). \
+Put text that must appear in the image in quotes. negative_prompt only matters when cfg_scale > 1; the \
+distilled/turbo models run at 1.
+
+Timing: the engine is stopped while idle. The first request starts it (about 10-20 s) and loads the model; \
+switching models reloads. Renders run one at a time, shared with other clients. Time grows with pixel count \
+and steps: prefer 1024x1024-class sizes and turbo/distilled models for drafts. If a render outlives \
+max_wait_s you get a job_id: collect it with get_job.
+
+When something fails: tool errors say what to fix. engine_status reports setup_problems (and the config \
+file) when the engine can't start; the pinaxium://logs/comfyui resource shows ComfyUI's own errors.
+
+Engine control: stop_engine frees all GPU memory now (it also ends other clients' renders); free_vram unloads \
+models but keeps the engine; it stops by itself after the configured idle time.
+
+run_workflow runs an arbitrary ComfyUI graph and is open-world: partner API nodes call paid external \
+services and custom nodes can run any code. Use it only when the built-in tools can't do the job and the \
+user wants it.
+"""
+
 mcp = PinaxiumServer(
     name="pinaxium",
-    title="Local image generation (ComfyUI)",
+    title="Pinaxium: local image generation (ComfyUI)",
     version=__version__,
     lifespan=lifespan,
     middleware=[notifier.middleware],
-    instructions=(
-        "Generates and edits images locally on this machine's GPU through ComfyUI. Call list_models to see "
-        "the usable models (discovered automatically from the ComfyUI model folders) and pass a model id to "
-        "generate_image / edit_image; without one the default is used. The engine is stopped while idle and "
-        "starts on the first request (cold start: engine boot plus model load, up to a minute or two). "
-        "engine_status says whether it is ready. Tools return the full-size file path, a resource link to the "
-        "full-size image (pinaxium://images/...) and a preview; use view_image with crop to inspect details of a "
-        "result at full resolution. Resources: saved images, pinaxium://engine/status (subscribable) and the "
-        "ComfyUI log at pinaxium://logs/comfyui for diagnosing failed renders."
-    ),
+    instructions=INSTRUCTIONS,
 )
+
+
+def _description(doc: str) -> str:
+    """Docstring -> tool description: dedented, wrapped lines joined into paragraphs (clients show the text
+    verbatim, source indentation and line breaks included)."""
+    paragraphs = inspect.cleandoc(doc or "").split("\n\n")
+    return "\n\n".join(" ".join(line.strip() for line in p.splitlines()) for p in paragraphs)
+
+
+def tool(**kwargs):
+    def deco(fn):
+        return mcp.tool(description=_description(fn.__doc__), **kwargs)(fn)
+    return deco
 notifier.bus = mcp._subscriptions          # 2026-07-28 subscriptions/listen fan-out
 # legacy resources/subscribe (protocol <= 2025-11-25); MCPServer doesn't register these itself
 mcp._lowlevel_server.add_request_handler("resources/subscribe", SubscribeRequestParams, notifier.on_subscribe)
@@ -194,14 +233,16 @@ def _results(paths: list[str], include_preview: bool) -> list:
 
 # ---------- engine ----------
 
-@mcp.tool(title="Engine status", annotations=_hints(read_only=True, idempotent=True))
+@tool(title="Engine status", annotations=_hints(read_only=True, idempotent=True))
 async def engine_status() -> EngineStatus:
-    """Report whether the engine is stopped, starting or ready to render, plus GPU memory, whether models
-    are loaded, queue and idle time. Does not start the engine."""
+    """Report whether the engine is stopped, starting, ready to render, or external (a ComfyUI this server
+    didn't start, which it uses but never stops), plus GPU memory, whether models are loaded, the queue,
+    idle time, the config file in use and, if the engine can't start, setup_problems saying how to fix them.
+    Never starts the engine."""
     return EngineStatus.model_validate(await engine.status())
 
 
-@mcp.tool(title="Start engine", annotations=_hints(read_only=False, idempotent=True))
+@tool(title="Start engine", annotations=_hints(read_only=False, idempotent=True))
 async def start_engine(ctx: Context) -> EngineStatus:
     """Start the engine now (otherwise it starts on the first render) and wait until it is ready to render.
     Models load into VRAM on the first render, not here. Does nothing if it is already running."""
@@ -209,11 +250,12 @@ async def start_engine(ctx: Context) -> EngineStatus:
     return EngineStatus.model_validate(await engine.status())
 
 
-@mcp.tool(title="Stop engine", annotations=_hints(read_only=False, destructive=True, idempotent=True),
+@tool(title="Stop engine", annotations=_hints(read_only=False, destructive=True, idempotent=True),
           structured_output=False)
 async def stop_engine() -> str:
     """Shut the engine down now and release all GPU memory. It restarts on the next request.
-    A running render and queued jobs are lost."""
+    A running render and queued jobs are lost, including other clients' (the engine is shared).
+    A ComfyUI this server didn't start is left running."""
     if engine.request_stop():
         return "Stop requested; the engine will exit within a few seconds."
     if await engine.api_up():
@@ -221,7 +263,7 @@ async def stop_engine() -> str:
     return "The engine is already stopped."
 
 
-@mcp.tool(title="Free GPU memory", annotations=_hints(read_only=False, idempotent=True), structured_output=False)
+@tool(title="Free GPU memory", annotations=_hints(read_only=False, idempotent=True), structured_output=False)
 async def free_vram() -> str:
     """Unload models from GPU and system memory (and clear ComfyUI's node cache) but keep the engine
     running; the next render reloads them."""
@@ -233,15 +275,17 @@ async def free_vram() -> str:
 
 # ---------- models and rendering ----------
 
-@mcp.tool(title="List image models", annotations=_hints(read_only=True, idempotent=True))
+@tool(title="List image models", annotations=_hints(read_only=True, idempotent=True))
 async def list_models() -> ModelList:
-    """List the image models found in ComfyUI's model folders: each usable model's id (pass it as `model`),
-    family, capabilities, default steps/cfg and files; models that can't be used yet and why; and other
-    files found (LoRAs, unsupported architectures). New files are detected automatically."""
+    """List the image models found in ComfyUI's model folders, default model first: each one's id (pass it
+    as `model`), family, capabilities (editing, reference-image limit, transparency, lettering quality,
+    largest size), default steps/cfg, notes comparing it with the others, files and license; models that
+    can't be used yet and what they are missing; and other files found (LoRAs, unsupported architectures).
+    New model files are picked up automatically. Works while the engine is stopped."""
     return ModelList.model_validate(registry.summary())
 
 
-@mcp.tool(title="Generate image", annotations=_hints(read_only=False, idempotent=False), structured_output=False)
+@tool(title="Generate image", annotations=_hints(read_only=False, idempotent=False), structured_output=False)
 async def generate_image(
     prompt: Prompt,
     ctx: Context,
@@ -258,8 +302,13 @@ async def generate_image(
     include_preview: IncludePreview = True,
     max_wait_s: MaxWait = DEFAULT_MAX_WAIT_S,
 ) -> list:
-    """Generate an image from a text prompt. Saves the full-size image and returns its path, the settings
-    used (model, steps, seed, cfg) and, by default, a preview as image content."""
+    """Generate an image from a text prompt. Waits for the render (starting the engine and loading the model
+    first if needed) up to max_wait_s.
+
+    Reply, in order: a text block with the saved file's path, size and mode, the settings used (model, steps,
+    seed, cfg), the render time and the job_id; a resource link to the full-size PNG (pinaxium://images/...);
+    and a preview (max 1024 px) unless include_preview is false. If the render is still running at
+    max_wait_s, the reply is just the job_id for get_job."""
     m = registry.get(model)
     _check_transparency(m, transparent)
     p = wf.resolve(m.defaults, steps, seed, cfg_scale)
@@ -267,7 +316,7 @@ async def generate_image(
     return await _run(graph, f"model={m.id} steps={p.steps} seed={p.seed} cfg={p.cfg}", max_wait_s, ctx, include_preview)
 
 
-@mcp.tool(title="Edit image", annotations=_hints(read_only=False, idempotent=False), structured_output=False)
+@tool(title="Edit image", annotations=_hints(read_only=False, idempotent=False), structured_output=False)
 async def edit_image(
     prompt: Annotated[str, Field(description="The instruction, e.g. \"make it night time\" or \"put the person "
                                              "from image 1 in the jacket from image 2\".", min_length=1)],
@@ -289,8 +338,13 @@ async def edit_image(
     include_preview: IncludePreview = True,
     max_wait_s: MaxWait = DEFAULT_MAX_WAIT_S,
 ) -> list:
-    """Edit an image, or compose a new one from several reference images, following an instruction.
-    Only models whose capabilities include edit can do this. Returns like generate_image."""
+    """Edit an image, or compose a new one from several reference images, following an instruction (refer to
+    them as image 1, image 2, ... in the order given). Only models whose capabilities.edit is true can do
+    this, with at most their max_reference_images.
+
+    References can be any image file ComfyUI reads (PNG, JPEG, WebP) and are copied into ComfyUI's input
+    folder. The output has the first reference's aspect ratio at about resolution x resolution pixels. The
+    reply is the same as generate_image's."""
     m = registry.get(model)
     builder = wf.BUILDERS[m.builder]
     if not m.capabilities.get("edit"):
@@ -309,7 +363,7 @@ async def edit_image(
     return await _run(graph, f"model={m.id} steps={p.steps} seed={p.seed} cfg={p.cfg}", max_wait_s, ctx, include_preview)
 
 
-@mcp.tool(title="Run ComfyUI workflow",
+@tool(title="Run ComfyUI workflow",
           annotations=_hints(read_only=False, destructive=True, idempotent=False, open_world=True),
           structured_output=False)
 async def run_workflow(
@@ -321,22 +375,27 @@ async def run_workflow(
     max_wait_s: MaxWait = DEFAULT_MAX_WAIT_S,
 ) -> list:
     """Run an arbitrary ComfyUI workflow, for models or features the built-in tools don't cover (LoRAs,
-    ControlNet, unsupported architectures). Returns every image the workflow saved or previewed.
+    ControlNet, unsupported architectures). The graph is ComfyUI's API format, as written by ComfyUI's
+    "Export (API)". Returns every image the workflow saved or previewed, like generate_image.
+
     Unlike the other tools this is open-world and destructive: ComfyUI's bundled partner API nodes call
     external paid services (OpenAI, Google, Anthropic and others), installed custom nodes can run arbitrary
-    code with network access, and nodes can write or overwrite files. The workflow runs exactly as given."""
+    code with network access, and nodes can write or overwrite files. The workflow runs exactly as given:
+    use it only when the built-in tools can't do the job."""
     if not workflow or not all(isinstance(v, dict) and "class_type" in v for v in workflow.values()):
         raise ValueError('workflow must be API format: {"1": {"class_type": "...", "inputs": {...}}, ...}')
     return await _run(workflow, "workflow=custom", max_wait_s, ctx, include_preview)
 
 
-@mcp.tool(title="Get render result", annotations=_hints(read_only=True, idempotent=True), structured_output=False)
+@tool(title="Get render result", annotations=_hints(read_only=True, idempotent=True), structured_output=False)
 async def get_job(
     job_id: Annotated[str, Field(description="The job_id returned by a render that outlived max_wait_s.",
                                  min_length=1)],
     include_preview: IncludePreview = True,
 ) -> list:
-    """Check a render that outlived max_wait_s: returns its state, and the image once done."""
+    """Check a render that outlived max_wait_s. Its state is queued, running, done (the reply then is the same
+    as generate_image's), error (with ComfyUI's message) or unknown. Job state lives in the engine: once the
+    engine has stopped, find the result with list_images instead."""
     if not await engine.api_up():
         return ["The engine is stopped, so the job's state is gone. Check list_images for its output."]
     engine.touch_activity()
@@ -349,7 +408,7 @@ async def get_job(
     return out + _results(j["images"], include_preview)
 
 
-@mcp.tool(title="Cancel render", annotations=_hints(read_only=False, destructive=True, idempotent=True),
+@tool(title="Cancel render", annotations=_hints(read_only=False, destructive=True, idempotent=True),
           structured_output=False)
 async def cancel_render() -> str:
     """Interrupt the render that is currently running; its result is lost. Queued jobs stay queued."""
@@ -361,11 +420,13 @@ async def cancel_render() -> str:
 
 # ---------- images ----------
 
-@mcp.tool(title="List saved images", annotations=_hints(read_only=True, idempotent=True))
+@tool(title="List saved images", annotations=_hints(read_only=True, idempotent=True))
 async def list_images(
     limit: Annotated[int, Field(description="How many to return.", ge=1, le=200)] = 20,
 ) -> ImageList:
-    """List the most recent images saved by this service, newest first (works while the engine is stopped)."""
+    """List the most recent images saved by this server (its output folder, `<base_dir>/output/pinaxium`),
+    newest first, with path, modification time and size. Works while the engine is stopped; each image is
+    also readable at full size as the resource pinaxium://images/<file name>."""
     root = os.path.join(cfg.output_dir, wf.OUTPUT_SUBFOLDER)
     files = []
     if os.path.isdir(root):
@@ -379,7 +440,7 @@ async def list_images(
                              for f in files[:limit]])
 
 
-@mcp.tool(title="View image", annotations=_hints(read_only=True, idempotent=True), structured_output=False)
+@tool(title="View image", annotations=_hints(read_only=True, idempotent=True), structured_output=False)
 async def view_image(
     path: Annotated[str, Field(description="Path of a local image file, e.g. from a render or list_images.",
                                min_length=1)],
@@ -389,8 +450,10 @@ async def view_image(
     max_side: Annotated[int, Field(description="Longest side of the returned image in pixels.",
                                    ge=64, le=VIEW_MAX_SIDE)] = VIEW_MAX_SIDE,
 ) -> list:
-    """Look at a local image (e.g. a result, to check it before showing the user). Returns its path, size and
-    mode, and the image itself as image content, downscaled to max_side."""
+    """Look at a local image, e.g. a result, to check it before showing the user. Returns a text block with its
+    path, full size and mode, then the image itself (JPEG, or PNG if it has transparency), downscaled to
+    max_side. With crop, only that region is returned, at full resolution when it fits in max_side. Reads any
+    image file this server's process can read, not only its own results."""
     if not os.path.isfile(path):
         raise ValueError(f"no such file: {path}")
     shown = _preview(path, max_side, crop)

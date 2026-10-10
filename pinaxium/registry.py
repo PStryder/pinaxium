@@ -34,7 +34,8 @@ class Family:
     vae_arch: str
     capabilities: dict
     license: str
-    variants: Callable[[str], dict]  # filename -> defaults (steps, cfg) for that variant
+    variants: Callable[[str], dict]  # filename -> defaults (variant, steps, cfg, note) for that variant
+    notes: str = ""                  # for choosing between models: strengths, limits, relative speed
     max_params_b: float | None = None   # tells same-class models of different sizes apart
     vae_prefer: tuple = ()           # name hints when several VAEs share a shape (e.g. 16-channel ones)
 
@@ -53,31 +54,43 @@ def _turbo_variant(turbo: dict, base: dict):
 def _klein_variant(filename: str) -> dict:
     # BFL ships klein as a step-distilled model and an undistilled "base" one
     if "base" in filename.lower():
-        return {"variant": "base", "steps": 20, "cfg": 5.0}
-    return {"variant": "distilled", "steps": 4, "cfg": 1.0}
+        return {"variant": "base", "steps": 20, "cfg": 5.0,
+                "note": "Undistilled base: much slower, uses real guidance and negative prompts; mainly for fine-tuning."}
+    return {"variant": "distilled", "steps": 4, "cfg": 1.0, "note": "Step-distilled: 4 steps."}
 
+
+_TURBO_NOTE = "Distilled turbo variant: several times faster than base, with very similar images for the same seed."
 
 # Each family's builder and defaults come from Comfy-Org's official template, and each was verified with a
-# real render on this machine before being listed here.
+# real render before being listed here. Notes are relative comparisons from those renders (bench.py).
 FAMILIES = [
     Family(name="Qwen-Image 2.1", arch="QwenImage21", builder="qwen_image21",
            text_encoder_arch="QWEN3VL_8B", vae_arch="QwenImage21VAE",
            capabilities={"text_to_image": True, "edit": True, "max_reference_images": 10, "max_side": 2048,
                          "transparency": True, "text_rendering": "strong"},
            license="Qwen Research License (non-commercial)",
-           variants=_turbo_variant({"steps": 8, "cfg": 1.0}, {"steps": 25, "cfg": 1.0})),
+           notes="Highest quality and the most reliable lettering; edits and composes from up to 10 reference "
+                 "images; can output transparency. The base variant is the slowest model here.",
+           variants=_turbo_variant({"steps": 8, "cfg": 1.0, "note": _TURBO_NOTE},
+                                   {"steps": 25, "cfg": 1.0, "note": "Base variant: 25 steps."})),
     Family(name="Z-Image", arch="ZImage", builder="z_image",
            text_encoder_arch="QWEN3_4B", vae_arch="VAE_16ch", vae_prefer=("ae.", "flux"),
            capabilities={"text_to_image": True, "edit": False, "max_side": 2048, "text_rendering": "good"},
            license="Apache-2.0",
-           variants=_turbo_variant({"steps": 8, "cfg": 1.0}, {"steps": 25, "cfg": 4.0})),
+           notes="Fast text-to-image with clean lettering; no editing.",
+           variants=_turbo_variant({"steps": 8, "cfg": 1.0, "note": "Turbo: 8 steps."},
+                                   {"steps": 25, "cfg": 4.0, "note": "Base: 25 steps with real guidance; slower."})),
     Family(name="FLUX.2 [klein] 4B", arch="Flux2", builder="flux2_klein", max_params_b=6.0,
            text_encoder_arch="QWEN3_4B", vae_arch="VAE_32ch",
-           capabilities={"text_to_image": True, "edit": True, "max_reference_images": 4, "max_side": 2048},
-           license="Apache-2.0", variants=_klein_variant),
+           capabilities={"text_to_image": True, "edit": True, "max_reference_images": 4, "max_side": 2048,
+                         "text_rendering": "weak"},
+           license="Apache-2.0",
+           notes="The fastest model here; edits and composes from up to 4 reference images. Lettering is "
+                 "unreliable (misspellings), so prefer another model when the image must contain text.",
+           variants=_klein_variant),
 ]
 
-# companion preference when several files share an architecture: smaller formats first (16 GB card)
+# companion preference when several files share an architecture: smaller formats first (they fit more GPUs)
 _PRECISION_RANK = ("int8", "fp8", "w4a8", "nf4", "bf16", "fp16", "fp32")
 
 
@@ -122,10 +135,11 @@ class Model:
     license: str
     available: bool
     missing: list = field(default_factory=list)
+    notes: str = ""
 
     def public(self) -> dict:
         d = {"id": self.id, "family": self.family, "available": self.available, "defaults": self.defaults,
-             "capabilities": self.capabilities, "files": self.files, "license": self.license}
+             "capabilities": self.capabilities, "files": self.files, "license": self.license, "notes": self.notes}
         if self.missing:
             d["missing"] = self.missing
         return d
@@ -223,11 +237,13 @@ class Registry:
                 missing.append(f"text encoder ({fam.text_encoder_arch})")
             if not vaes:
                 missing.append(f"VAE ({fam.vae_arch})")
+            defaults = fam.variants(f.name)
+            variant_note = defaults.pop("note", "")
             out.append(Model(
                 id=os.path.splitext(f.name)[0], family=fam.name, builder=fam.builder,
                 files={"unet": f.name, "clip": tes[0].name if tes else None, "vae": vaes[0].name if vaes else None},
-                defaults=fam.variants(f.name), capabilities=fam.capabilities, license=fam.license,
-                available=not missing, missing=missing))
+                defaults=defaults, capabilities=fam.capabilities, license=fam.license,
+                available=not missing, missing=missing, notes=f"{fam.notes} {variant_note}".strip()))
         order = {fam.name: i for i, fam in enumerate(FAMILIES)}      # default: first family, base before turbo
         out.sort(key=lambda m: (not m.available, order[m.family], m.defaults.get("variant") == "turbo", m.id))
         return out

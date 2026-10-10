@@ -1,0 +1,43 @@
+# Changelog
+
+## 0.3.0 — 2026-10-09
+
+### Configuration
+- **Config file, created on first run.** Pinaxium detects ComfyUI (Desktop, the portable build, or clones in common folders and drive roots), together with the Python it runs under, and writes a commented TOML file. Where it lives: `%APPDATA%\pinaxium\config.toml` on Windows, the XDG config folder on Linux, Application Support on macOS, or `PINAXIUM_CONFIG`.
+- **Settings precedence:** environment variables, then the file, then defaults.
+- **`python -m pinaxium.config`** shows the effective settings and where each came from; `--init` re-detects and rewrites the file.
+- **Separate data folder:** `base_dir` can differ from the code folder, as ComfyUI Desktop requires, and is passed to ComfyUI as `--base-directory`. `comfy_args` adds extra ComfyUI flags.
+- **Fix:** overriding `comfy_dir` from the environment no longer borrows the file's `base_dir`/`comfy_python` from another install.
+- **Setup problems are explained:** they appear in `engine_status` (`setup_problems`, `config_file`) and in tool errors, and no engine is started. Detector failures caused by a broken setup are no longer cached.
+- **No machine-specific defaults remain.** Runtime state moved to the platform data folder (Windows: `%LOCALAPPDATA%\pinaxium\state`).
+
+### Documentation
+- **Instructions:** the server instructions are now a usage playbook: workflow, model choice, prompting, timing, failures, engine control, and when to use `run_workflow`.
+- **Tool and result descriptions:** tool descriptions are clean paragraphs, and describe the reply's contents and the edge cases. Every result field is described.
+- **Model notes:** `list_models` gives `notes` comparing the models (strengths, limits, relative speed), and `text_rendering` now uses strong/good/weak.
+- **New documents:**
+  - `docs/GUIDE.md`: usage, troubleshooting, FAQ;
+  - `docs/CONFIGURATION.md`;
+  - `docs/DEVELOPMENT.md`;
+  - `docs/REFERENCE.md`: generated from the live server by `tools_docs.py`.
+- **Doc tests:** the reference must match the server, and the hand-written docs may only name real tools, resources and settings.
+- **Server title:** now "Pinaxium: local image generation (ComfyUI)".
+
+### Other
+- **Hermetic tests:** the test run never touches the real install, engine or config.
+- **Linux and macOS:** the supervisor is started in its own session.
+
+## 0.2.0 — 2026-10-09
+
+First public version, as Pinaxium (previously developed as imagegen-mcp).
+
+- **Shared engine.** A detached supervisor starts ComfyUI on demand and stops it after the idle period. On Windows it is started through WMI so that closing an MCP client doesn't kill it, and a crashed supervisor's lock is taken over.
+- **Model discovery.** Files are identified by ComfyUI's own detection code from safetensors headers. Verified families: Qwen-Image 2.1, Z-Image and FLUX.2 [klein] 4B.
+- **Tools:**
+  - `generate_image`, `edit_image` (multi-reference) and `run_workflow`;
+  - `view_image`, with crop;
+  - engine control and job handling.
+- **Complete catalogue:** titles, all four hints, parameter ranges, and output schemas.
+- **Resources:** full-size images, subscribable engine status, and logs. Results carry resource links, and list-changed and updated notifications are sent.
+- **`run_workflow` is open-world.**
+- **Tests:** lifecycle tests against a fake ComfyUI, plus a mutation check and a benchmark.

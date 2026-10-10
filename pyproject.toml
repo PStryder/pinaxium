@@ -1,6 +1,6 @@
 [project]
 name = "pinaxium"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for local image generation and editing through an on-demand ComfyUI engine"
 license = "MIT"
 license-files = ["LICENSE"]
