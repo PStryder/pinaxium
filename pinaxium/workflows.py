@@ -50,6 +50,16 @@ def _save(prefix: str, source: str = "decode") -> dict:
     return {"class_type": "SaveImage", "inputs": {"images": [source, 0], "filename_prefix": f"{OUTPUT_SUBFOLDER}/{prefix}"}}
 
 
+def into_folder(graph: dict, folder: str) -> dict:
+    """Point every SaveImage at `folder` (relative to ComfyUI's output folder), keeping its file name prefix:
+    pinaxium/qwen21 -> pinaxium/<project>/qwen21."""
+    for node in graph.values():
+        if node.get("class_type") == "SaveImage":
+            stem = node["inputs"]["filename_prefix"].rsplit("/", 1)[-1]
+            node["inputs"]["filename_prefix"] = f"{folder}/{stem}"
+    return graph
+
+
 def _no_transparency(builder: str, transparent: bool) -> None:
     if transparent:
         raise ValueError(f"{builder} models can't produce transparent images")

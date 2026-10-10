@@ -11,7 +11,8 @@ MCP client ──stdio──> pinaxium.server ──HTTP──> ComfyUI (host:po
 
 | Module | Role |
 |---|---|
-| `server.py` | The MCP server: tools, resources, instructions. Builds graphs and sends them to the engine. Runs its own stdio loop so it can advertise `resources.listChanged`. |
+| `server.py` | The MCP server: tools, resources, instructions. Builds graphs and sends them to the engine. Runs its own stdio loop so it can advertise `resources.listChanged`. Its `tool()`/`resource()` decorators turn expected errors into `ToolError`/`ResourceNotFoundError`; the SDK hides the message of anything else. |
+| `projects.py` | Projects, drafts and finals: folders and URIs, the per-project manifest (`project.json`) and finals index (`finals.json`), final identity (URI stamped into the PNG, pixel hash, search of the finals tree, relinking), recycle-bin deletion, retention. |
 | `engine.py` | Client side of the engine: wakes the supervisor, submits graphs, polls jobs, reads status. Checks the setup before starting anything. |
 | `supervisor.py` | Owns the ComfyUI process. Holds `engine.lock` (an mtime heartbeat), writes `state.json`, and stops ComfyUI when idle or on request. Stdlib only. |
 | `config.py` | Settings (env > file > defaults), ComfyUI detection, the config file, `python -m pinaxium.config`. |
@@ -59,6 +60,8 @@ MCP client ──stdio──> pinaxium.server ──HTTP──> ComfyUI (host:po
 | `test_lifecycle.py` | Supervisor and engine against `fake_comfy.py`: idle shutdown, keep-alive, stop, single owner, stale lock, external ComfyUI, surviving a closed client job |
 | `test_catalogue.py` | The tool catalogue over real stdio: titles, all hints, parameter descriptions and ranges, output schemas, described result fields |
 | `test_resources.py` | Resources over real stdio: listing, full-size reads, URI safety, list-changed and updated notifications |
+| `test_projects.py` | Project names and URIs; drafts and provenance; finalize (stamp, IDs, idempotence); finals surviving renames, moves and stripped metadata; relinking; recycle-bin-only deletion; retention |
+| `test_project_tools.py` | The project tools over real stdio: paging, finalize, search, the numbered contact sheet, `get_final`, `relink_final`, `delete_images` |
 | `test_docs.py` | `docs/REFERENCE.md` matches the live server; hand-written docs name only real tools, resources, settings and environment variables |
 
 **Mutation check:** `uv run python tools_mutate.py [substring ...]` removes each guarantee in turn (the list is in the file), runs the suite, and requires a failure. Every claim the code makes should have a mutation. It edits the source while running and restores it afterwards; don't edit files during a run.
@@ -82,6 +85,9 @@ These were found the hard way; the code handles each, and the tests cover it:
 - **`MCPServer.run()` advertises `resources.listChanged = false` to clients before protocol 2026-07-28.** The server runs its own stdio loop with the right notification options.
 - **The detection cache is keyed by the file's size and modification time at scan time.** A file that is still downloading is detected again on the next scan instead of losing its result.
 - **A uv venv breaks when its folder is moved,** because the launchers hold absolute paths. Recreate it.
+- **The MCP SDK hides the message of any exception that isn't a `ToolError` or `ResourceError`.** Clients see only "Error executing tool …".
+- **MCP stdio clients pass the server only a minimal environment** unless they're given `env` explicitly. Test and smoke clients pass `os.environ`.
+- **Final identity can't rely on a hash of the file's bytes.** Stamping or stripping metadata changes the bytes. Pinaxium stamps the URI and keeps a hash of the decoded pixels.
 
 ## Releasing
 

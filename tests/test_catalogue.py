@@ -13,15 +13,20 @@ from pinaxium import __version__
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
-STRUCTURED = {"engine_status", "start_engine", "list_models", "list_images"}
+TOOLS = {"engine_status", "start_engine", "stop_engine", "free_vram", "list_models", "generate_image", "edit_image",
+         "run_workflow", "get_job", "cancel_render", "list_projects", "list_drafts", "list_finals", "get_final",
+         "finalize_image", "relink_final", "derive_from_final", "delete_images", "view_image"}
+STRUCTURED = {"engine_status", "start_engine", "list_models", "list_projects", "list_drafts", "list_finals",
+              "finalize_image", "relink_final", "delete_images"}
 RANGES = {   # (tool, param) -> (minimum, maximum) the schema must declare
     ("generate_image", "width"): (256, 2048), ("generate_image", "height"): (256, 2048),
     ("generate_image", "steps"): (1, 100), ("generate_image", "cfg_scale"): (0, 20),
     ("edit_image", "resolution"): (256, 2048), ("edit_image", "steps"): (1, 100),
-    ("view_image", "max_side"): (64, 1568), ("list_images", "limit"): (1, 200),
+    ("view_image", "max_side"): (64, 1568), ("list_drafts", "limit"): (1, 100), ("list_finals", "limit"): (1, 100),
+    ("get_final", "max_side"): (64, 1568), ("derive_from_final", "resolution"): (256, 2048),
 }
-READ_ONLY = {"engine_status", "list_models", "get_job", "list_images", "view_image"}
-DESTRUCTIVE = {"stop_engine", "cancel_render", "run_workflow"}
+READ_ONLY = {"engine_status", "list_models", "list_projects", "list_drafts", "list_finals", "get_final", "view_image"}
+DESTRUCTIVE = {"stop_engine", "cancel_render", "run_workflow", "delete_images"}
 OPEN_WORLD = {"run_workflow"}       # arbitrary nodes: ComfyUI's partner API nodes and custom nodes reach the network
 
 
@@ -35,7 +40,7 @@ def catalogue(tmp_path_factory):
         async with stdio_client(params) as streams, ClientSession(*streams) as s:
             init = await s.initialize()
             tools = await s.list_tools()
-            listed = await s.call_tool("list_images", {"limit": 3})
+            listed = await s.call_tool("list_drafts", {"limit": 3})
             return init, tools, listed
     return asyncio.run(fetch())
 
@@ -61,7 +66,7 @@ def test_server_identifies_itself(catalogue):
 
 def test_every_tool_has_title_description_and_all_hints(catalogue):
     _, tools, _ = catalogue
-    assert len(tools.tools) == 12
+    assert {t.name for t in tools.tools} == TOOLS
     for t in tools.tools:
         d = schema_of(t)
         assert d.get("title"), f"{t.name}: no title"
@@ -91,6 +96,22 @@ def test_ranges_are_declared(catalogue):
     assert (arr.get("minItems"), arr.get("maxItems")) == (4, 4)
 
 
+def test_expected_errors_reach_the_model_with_their_message(tmp_path):
+    """The SDK replaces any exception but ToolError with "Error executing tool <name>"; ours must get through."""
+    async def go():
+        env = {**os.environ, "PINAXIUM_STATE_DIR": str(tmp_path / "s")}
+        params = StdioServerParameters(command=sys.executable, args=["-m", "pinaxium.server"], cwd=PROJECT, env=env)
+        async with stdio_client(params) as streams, ClientSession(*streams) as s:
+            await s.initialize()
+            r = await s.call_tool("generate_image", {"prompt": "x", "model": "no-such-model"})
+            assert r.is_error and "unknown model 'no-such-model'" in r.content[0].text
+            r = await s.call_tool("get_final", {"final": "pinaxium://projects/none/finals/nope"})
+            assert r.is_error and "no such final" in r.content[0].text
+            with pytest.raises(Exception, match="no such draft"):
+                await s.read_resource("pinaxium://projects/none/drafts/x.png")
+    asyncio.run(go())
+
+
 def test_every_result_field_is_described(catalogue):
     _, tools, _ = catalogue
     for t in tools.tools:
@@ -113,4 +134,4 @@ def test_json_tools_have_output_schemas_and_return_structured_content(catalogue)
     for t in tools.tools:
         has = bool(schema_of(t).get("outputSchema"))
         assert has == (t.name in STRUCTURED), f"{t.name}: outputSchema {has}"
-    assert listed.structured_content is not None and "images" in listed.structured_content
+    assert listed.structured_content is not None and "drafts" in listed.structured_content

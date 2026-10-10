@@ -43,6 +43,12 @@ When no config file exists, the first use detects ComfyUI and writes one, with a
 | `start_timeout_s` | `PINAXIUM_START_TIMEOUT_S` | `180` | Give up waiting for ComfyUI to start after this long |
 | `state_dir` | `PINAXIUM_STATE_DIR` | platform data folder | Logs, lock and caches (see below). Windows: `%LOCALAPPDATA%\pinaxium\state`; macOS: `~/Library/Application Support/pinaxium/state`; Linux: `$XDG_STATE_HOME/pinaxium` |
 | `default_model` | `PINAXIUM_DEFAULT_MODEL` | first usable model | Model id used when a request names none |
+| `finals_dir` | `PINAXIUM_FINALS_DIR` | `<Pictures>/Pinaxium` | Where finals are kept, one folder per project. On Windows "Pictures" is the shell's known Pictures folder, so OneDrive redirection is followed. |
+| `draft_retention_days` | `PINAXIUM_DRAFT_RETENTION_DAYS` | `0` (never) | Send unfinalized drafts older than this to the recycle bin; checked hourly while a client is connected |
+
+For testing only, `PINAXIUM_TRASH_DIR` makes deletions move files into that folder instead of the OS recycle bin.
+
+**MCP clients pass a server only a minimal environment.** Variables set in your shell don't reach Pinaxium when a client starts it. Set them in the client's server entry (`env`), or use the config file.
 
 Environment variables override the file key by key. One exception keeps things consistent: if `PINAXIUM_COMFY_DIR` is set but `PINAXIUM_BASE_DIR` / `PINAXIUM_COMFY_PYTHON` are not, those two are derived from the environment's install, not taken from the file (which may describe a different install).
 
@@ -91,9 +97,14 @@ In `state_dir`:
 | `supervisor.log` | The supervisor's own messages (also `pinaxium://logs/supervisor`) |
 | `scan_cache.json` | Model detection results, keyed by file path, size and modification time |
 | `spawn_env.json` | `PINAXIUM_*` settings handed to the supervisor at start-up |
+| `jobs/<job id>.json` | What a render was (project, prompt, model, ...) until its images are recorded; it outlives the call when a render exceeds `max_wait_s` |
 
-In ComfyUI's data folder (`base_dir`):
-- `output/pinaxium/`: every image Pinaxium saves;
-- `input/pinaxium/`: reference images uploaded for `edit_image`.
+These can all be deleted while the engine is stopped. Pinaxium recreates them as needed.
 
-All of these can be deleted while the engine is stopped. Pinaxium recreates them as needed.
+**In ComfyUI's data folder (`base_dir`)**, these are working files:
+- `output/pinaxium/<project>/`: drafts, plus `project.json` (what made each draft);
+- `input/pinaxium/<project>/`: reference images uploaded for edits.
+
+`delete_images` cleans these up.
+
+**In `finals_dir`:** `<project>/<id>.png` (each final, stamped with its own URI) and `<project>/finals.json` (the finals index: IDs, titles, descriptions, tags, provenance, last known location). Keep these: the index is what gives finals their permanent identities. Pinaxium never deletes anything here.

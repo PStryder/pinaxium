@@ -24,6 +24,8 @@ def pytest_configure(config):
         "PINAXIUM_COMFY_DIR": comfy,
         "PINAXIUM_STATE_DIR": os.path.join(_tmp, "state"),
         "PINAXIUM_PORT": str(_free_port()),
+        "PINAXIUM_FINALS_DIR": os.path.join(_tmp, "finals"),       # never the real Pictures folder
+        "PINAXIUM_TRASH_DIR": os.path.join(_tmp, "trash"),         # never the real recycle bin
     })
 
 

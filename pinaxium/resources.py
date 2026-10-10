@@ -12,14 +12,13 @@ import json
 import logging
 import os
 import time
-import urllib.parse
 
 from mcp.shared.subscriptions import ResourcesListChanged, ResourceUpdated
 from mcp_types import Annotations, EmptyResult, Resource, ResourceLink, SubscribeRequestParams, UnsubscribeRequestParams
 
-from pinaxium import workflows as wf
 from pinaxium.config import Config
 from pinaxium.engine import Engine
+from pinaxium.projects import ProjectError, Projects, draft_uri, final_uri, project_uri
 
 log = logging.getLogger(__name__)
 
@@ -27,64 +26,64 @@ POLL_S = 2.0
 LIST_LIMIT = 500                    # newest images listed by resources/list
 LOG_TAIL_BYTES = 256 * 1024
 
-IMAGE_PREFIX = "pinaxium://images/"
-IMAGE_TEMPLATE = IMAGE_PREFIX + "{filename}"
+PROJECT_TEMPLATE = "pinaxium://projects/{project}"                      # manifest: drafts + finals, provenance
+DRAFT_TEMPLATE = "pinaxium://projects/{project}/drafts/{filename}"      # a draft, full size
+FINAL_TEMPLATE = "pinaxium://projects/{project}/finals/{final_id}"      # a final, by its permanent id
 ENGINE_URI = "pinaxium://engine/status"
 LOG_URIS = {"pinaxium://logs/comfyui": "comfyui.log", "pinaxium://logs/supervisor": "supervisor.log"}
-
-
-def images_dir(cfg: Config) -> str:
-    return os.path.join(cfg.output_dir, wf.OUTPUT_SUBFOLDER)
-
-
-def image_uri(filename: str) -> str:
-    return IMAGE_PREFIX + urllib.parse.quote(filename)
-
-
-def image_path(cfg: Config, filename: str) -> str:
-    """Resolve a filename from an image URI to a file in the images folder, refusing anything else."""
-    name = urllib.parse.unquote(filename)
-    if not name or name != os.path.basename(name) or name in (".", "..") or "/" in name or "\\" in name:
-        raise ValueError(f"not an image name: {filename!r}")
-    if not name.lower().endswith(".png"):
-        raise ValueError("only the PNG images saved by this service are exposed")
-    root = os.path.realpath(images_dir(cfg))
-    path = os.path.realpath(os.path.join(root, name))
-    if os.path.dirname(path) != root or not os.path.isfile(path):
-        raise ValueError(f"no such image: {name}")
-    return path
-
-
-def saved_images(cfg: Config) -> list[os.DirEntry]:
-    d = images_dir(cfg)
-    if not os.path.isdir(d):
-        return []
-    files = [e for e in os.scandir(d) if e.is_file() and e.name.lower().endswith(".png")]
-    files.sort(key=lambda e: e.stat().st_mtime, reverse=True)
-    return files
 
 
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def image_resources(cfg: Config) -> list[Resource]:
+def image_resources(projects: Projects) -> list[Resource]:
+    """Finals first (they matter most), then the newest drafts, LIST_LIMIT in all; then one manifest per
+    project."""
     out = []
-    for e in saved_images(cfg)[:LIST_LIMIT]:
-        st = e.stat()
-        out.append(Resource(uri=image_uri(e.name), name=e.name, title=f"Image {e.name}", mime_type="image/png",
-                            size=st.st_size, description="Full-size image saved by pinaxium",
-                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"])))
+    for f in projects.finals():
+        if not f["exists"] or len(out) >= LIST_LIMIT:
+            continue
+        st = os.stat(f["path"])
+        label = f["title"] or f["id"]
+        out.append(Resource(uri=f["uri"], name=f["id"], title=f"Final {label} ({f['project']})", mime_type="image/png",
+                            size=st.st_size, description=(f["description"] or "Finished image")[:200],
+                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"],
+                                                    priority=1.0)))
+    for d in projects.drafts():
+        if len(out) >= LIST_LIMIT:
+            break
+        st = os.stat(d["path"])
+        name = os.path.basename(d["path"])
+        out.append(Resource(uri=d["uri"], name=name, title=f"Draft {name} ({d['project']})", mime_type="image/png",
+                            size=st.st_size, description="Draft" + (f": {d['prompt'][:160]}" if d.get("prompt") else ""),
+                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"],
+                                                    priority=0.5)))
+    for p in projects.list_projects():
+        out.append(Resource(uri=p["uri"], name=f"project-{p['project']}", title=f"Project {p['project']}",
+                            mime_type="application/json",
+                            description=f"{p['drafts']} drafts, {p['finals']} finals, with what made each"))
     return out
 
 
-def resource_link(cfg: Config, path: str) -> ResourceLink | None:
-    """A link to the full-size image for tool results, when the file is one of the exposed images."""
-    if os.path.dirname(os.path.realpath(path)) != os.path.realpath(images_dir(cfg)) or not path.lower().endswith(".png"):
+def project_document(projects: Projects, project: str) -> str:
+    """The project resource: its drafts (with provenance) and finals (with ids, metadata, provenance)."""
+    return json.dumps({"project": project, "uri": project_uri(project),
+                       "drafts": projects.manifest(project)["images"],
+                       "finals": {f["id"]: f for f in projects.finals(project)}}, indent=1)
+
+
+def resource_link(projects: Projects, path: str) -> ResourceLink | None:
+    """A link to the full-size image for tool results, when the file is one of Pinaxium's project images."""
+    try:
+        kind, project, real, fid = projects.locate(path)
+    except ProjectError:
         return None
-    name = os.path.basename(path)
-    return ResourceLink(uri=image_uri(name), name=name, title=f"Image {name}", mime_type="image/png",
-                        size=os.path.getsize(path), description="Full-size image (read it as a resource)")
+    name = os.path.basename(real)
+    uri = final_uri(project, fid) if kind == "final" else draft_uri(project, name)
+    return ResourceLink(uri=uri, name=fid or name, title=f"{kind.title()} {fid or name} ({project})",
+                        mime_type="image/png", size=os.path.getsize(real),
+                        description="Full-size image (read it as a resource)")
 
 
 def log_tail(cfg: Config, filename: str) -> str:
@@ -107,8 +106,10 @@ def _client_key(session):
 class Notifier:
     """Tracks clients and their subscriptions; the watcher turns state changes into notifications."""
 
-    def __init__(self, cfg: Config, engine: Engine):
-        self.cfg, self.engine = cfg, engine
+    SWEEP_EVERY_S = 3600.0
+
+    def __init__(self, cfg: Config, engine: Engine, projects: Projects):
+        self.cfg, self.engine, self.projects = cfg, engine, projects
         self.bus = None                                  # set by the server: its subscription bus
         self.clients: dict[int, object] = {}             # client key -> latest session (sends on the connection)
         self.subscriptions: dict[str, set[int]] = {}     # uri -> client keys
@@ -157,7 +158,22 @@ class Notifier:
     # --- watching ---
 
     def _images_signature(self) -> tuple:
-        return tuple((e.name, e.stat().st_mtime_ns) for e in saved_images(self.cfg)[:LIST_LIMIT])
+        drafts = [(d["path"], os.stat(d["path"]).st_mtime_ns) for d in self.projects.drafts()[:LIST_LIMIT]]
+        finals = [(f["uri"], f["exists"]) for f in self.projects.finals()]
+        return tuple(drafts + finals)
+
+    def _manifest_signatures(self) -> dict:
+        """Per project: its manifest's and finals index's modification times (the project resource's content)."""
+        out = {}
+        for name in self.projects.project_names():
+            sig = []
+            for path in (self.projects._manifest_path(name), self.projects._index_path(name)):
+                try:
+                    sig.append(os.stat(path).st_mtime_ns)
+                except OSError:
+                    sig.append(None)
+            out[name] = tuple(sig)
+        return out
 
     async def _engine_signature(self) -> tuple:
         s = await self.engine.status()
@@ -172,15 +188,27 @@ class Notifier:
 
     async def watch(self) -> None:
         images = self._images_signature()
+        manifests = self._manifest_signatures()
         eng = await self._engine_signature()
         logs = {uri: self._log_signature(f) for uri, f in LOG_URIS.items()}
+        last_sweep = 0.0
         while True:
             await asyncio.sleep(POLL_S)
             try:
+                if self.cfg.draft_retention_days > 0 and time.time() - last_sweep > self.SWEEP_EVERY_S:
+                    last_sweep = time.time()
+                    swept = self.projects.sweep(self.cfg.draft_retention_days)
+                    if swept:
+                        log.info("retention: sent %d old drafts to the recycle bin", len(swept))
                 now = self._images_signature()
                 if now != images:
                     images = now
                     await self.list_changed()
+                now_manifests = self._manifest_signatures()
+                for project, sig in now_manifests.items():
+                    if manifests.get(project) != sig:
+                        await self.updated(project_uri(project))
+                manifests = now_manifests
                 now_eng = await self._engine_signature()
                 if now_eng != eng:
                     eng = now_eng

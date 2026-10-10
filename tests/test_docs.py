@@ -41,17 +41,31 @@ def test_user_facing_docs_name_only_real_tools_parameters_fields_and_settings():
             assert name in known, f"{rel}: `{name}` is not a tool, parameter, result field or setting"
 
 
+def _uri_patterns(ref: str) -> list[re.Pattern]:
+    """The server's resources and templates (from the reference) as patterns; {param} matches one segment."""
+    static = re.findall(r"^\| `(pinaxium://[^`{]+)` \|", ref, re.M)
+    templates = re.findall(r"^\| `(pinaxium://[^`]*\{[^`]+)` \(template\)", ref, re.M)
+    pats = [re.compile(re.escape(u)) for u in static]
+    pats += [re.compile(re.sub(r"\\\{\w+\\\}", "[^/]+", re.escape(t))) for t in templates]
+    return pats
+
+
 def test_docs_name_only_real_resources_and_environment_variables():
     ref = _reference()
-    uris = set(re.findall(r"`(pinaxium://[^`{]+)`", ref)) | {"pinaxium://images/"}
-    envs = {env for env, _, _ in FIELDS.values()} | {"PINAXIUM_CONFIG", "PINAXIUM_ENGINE_CMD"}
+    patterns = _uri_patterns(ref)
+    assert len(patterns) >= 6
+    envs = {env for env, _, _ in FIELDS.values()} | {"PINAXIUM_CONFIG", "PINAXIUM_ENGINE_CMD", "PINAXIUM_TRASH_DIR"}
     for rel in HAND_WRITTEN:
         with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
             text = f.read()
-        for uri in re.findall(r"pinaxium://[a-z/]+[a-z]", text):
-            # exact, a path under a known prefix (images), or a prefix naming a group ("pinaxium://logs/...")
-            assert any(uri == u or uri.startswith(u.rstrip("/")) or u.startswith(uri + "/") for u in uris), \
-                f"{rel}: unknown resource {uri}"
+        for raw in re.findall(r"pinaxium://[^\s`'\")\]|,]+", text):
+            if raw.endswith("/..."):                                   # a group: "pinaxium://logs/..."
+                group = raw[:-3]
+                assert any(p.pattern.startswith(re.escape(group)) for p in patterns), f"{rel}: unknown resource {raw}"
+                continue
+            uri = raw.rstrip(".;:")
+            concrete = re.sub(r"<[^>/]+>", "x", uri).replace("...", "x")   # placeholders stand for one segment
+            assert any(p.fullmatch(concrete) for p in patterns), f"{rel}: unknown resource {uri}"
         for env in re.findall(r"PINAXIUM_[A-Z_]+[A-Z]", text):
             assert env in envs, f"{rel}: unknown environment variable {env}"
         if rel.endswith("CONFIGURATION.md"):

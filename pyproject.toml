@@ -1,6 +1,6 @@
 [project]
 name = "pinaxium"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for local image generation and editing through an on-demand ComfyUI engine"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "mcp>=2.3,<3",
     "pillow>=12.3.0",
+    "send2trash>=2.1.0",
 ]
 
 [dependency-groups]

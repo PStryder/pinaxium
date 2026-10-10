@@ -30,6 +30,8 @@ FIELDS: dict[str, tuple[str, type, object]] = {
     "start_timeout_s": ("PINAXIUM_START_TIMEOUT_S", float, 180.0),
     "state_dir": ("PINAXIUM_STATE_DIR", str, None),
     "default_model": ("PINAXIUM_DEFAULT_MODEL", str, None),
+    "finals_dir": ("PINAXIUM_FINALS_DIR", str, None),
+    "draft_retention_days": ("PINAXIUM_DRAFT_RETENTION_DAYS", float, 0.0),
 }
 WINDOWS = os.name == "nt"
 
@@ -59,6 +61,37 @@ def default_state_dir() -> str:
     if sys.platform == "darwin":
         return os.path.join(_home(), "Library", "Application Support", "pinaxium", "state")
     return os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(_home(), ".local", "state"), "pinaxium")
+
+
+def pictures_dir() -> str:
+    """The user's Pictures folder: on Windows the shell's known folder (follows OneDrive redirection), else
+    ~/Pictures, else the home folder."""
+    if WINDOWS:
+        try:
+            import ctypes
+            import uuid
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [("data", ctypes.c_ubyte * 16)]
+
+            folder_id = GUID()
+            ctypes.memmove(folder_id.data, uuid.UUID("33E28130-4E1E-4676-835A-98395C3BC3BB").bytes_le, 16)
+            out = ctypes.c_wchar_p()
+            shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
+            if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(out)) == 0:
+                path = out.value
+                ole32.CoTaskMemFree(ctypes.cast(out, wintypes.LPVOID))
+                if path:
+                    return path
+        except (OSError, AttributeError, ValueError):
+            pass
+    p = os.path.join(_home(), "Pictures")
+    return p if os.path.isdir(p) else _home()
+
+
+def default_finals_dir() -> str:
+    return os.path.join(pictures_dir(), "Pinaxium")
 
 
 # ---------- ComfyUI detection ----------
@@ -190,6 +223,8 @@ def render_config(values: dict, notes: list[str]) -> str:
         "start_timeout_s": "give up waiting for ComfyUI to start after this long",
         "state_dir": "logs, engine lock, model detection cache",
         "default_model": "model id used when a request names none (see list_models)",
+        "finals_dir": "where finalize_image copies finished images, one folder per project",
+        "draft_retention_days": "send unfinalized drafts older than this to the recycle bin; 0 = never",
     }
     for key in FIELDS:
         lines.append(f"# {help_[key]}")
@@ -211,6 +246,7 @@ def write_config(path: str, values: dict, notes: list[str]) -> None:
 def detected_values(installs: list[Install]) -> tuple[dict, list[str]]:
     values = {k: d for k, (_, _, d) in FIELDS.items() if d is not None}
     values["state_dir"] = default_state_dir()
+    values["finals_dir"] = default_finals_dir()
     if not installs:
         return values, ["No ComfyUI install was found. Set comfy_dir (and comfy_python if ComfyUI uses its own",
                         "Python) below, or install ComfyUI and run `python -m pinaxium.config --init`."]
@@ -244,6 +280,8 @@ class Config:
     start_timeout_s: float
     state_dir: str
     default_model: str | None
+    finals_dir: str
+    draft_retention_days: float
     config_file: str
     sources: dict = field(default_factory=dict, compare=False)
 
@@ -327,10 +365,13 @@ def load(create: bool = True) -> Config:
         sources["comfy_python"] = "detected next to comfy_dir"
     if not values["state_dir"]:
         values["state_dir"], sources["state_dir"] = default_state_dir(), "default"
+    if not values["finals_dir"]:
+        values["finals_dir"], sources["finals_dir"] = default_finals_dir(), "default"
     return Config(comfy_dir=comfy_dir, comfy_python=values["comfy_python"] or "", base_dir=values["base_dir"],
                   comfy_args=tuple(values["comfy_args"] or ()), host=values["host"], port=values["port"],
                   idle_minutes=values["idle_minutes"], start_timeout_s=values["start_timeout_s"],
-                  state_dir=values["state_dir"], default_model=values["default_model"], config_file=path,
+                  state_dir=values["state_dir"], default_model=values["default_model"],
+                  finals_dir=values["finals_dir"], draft_retention_days=values["draft_retention_days"], config_file=path,
                   sources=sources)
 
 

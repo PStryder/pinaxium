@@ -5,6 +5,7 @@ An MCP server that gives Claude (Desktop, Code, or any MCP client) local image g
 - **Holds no GPU memory while idle.** The first request starts ComfyUI; after 10 idle minutes it is shut down again. One engine is shared by all connected clients.
 - **Finds your models by itself.** Files in ComfyUI's model folders are identified by ComfyUI's own detection code and matched with their text encoder and VAE. Each family uses its official ComfyUI workflow.
 - **Covers the whole loop:** text-to-image, instruction edits and multi-image composition, full-size results as MCP resources, a crop viewer for checking detail, and engine status you can subscribe to.
+- **Organises the work.** Every render is a draft in a project, recorded with what made it. Keepers become finals with permanent URIs (`pinaxium://projects/hexy/finals/portrait-001`) that survive renames and moves, and can be searched, reused and branched from across projects. Leftover drafts go to the recycle bin in one call.
 - **Sets itself up.** On first run it detects your ComfyUI install (Desktop, portable or a clone) and writes a commented config file.
 
 ## Documentation

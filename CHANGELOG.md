@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.0 — 2026-10-09
+
+### Projects, drafts and finals
+- **Projects.** Every render is a draft in a project (`project` parameter, default `scratch`), recorded with its prompt, model, seed, settings and sources.
+- **Finals with permanent identity.** `finalize_image` turns a draft into a final with an ID and URI that never change, e.g. `pinaxium://projects/hexy/finals/portrait-001`, plus a title, description, tags and provenance. Finals live in `finals_dir`, which defaults to your Pictures folder's `Pinaxium`.
+- **IDs survive renames and moves.** Each final carries its URI inside the PNG (a text chunk; pixels and ComfyUI metadata untouched). Renames and moves inside `finals_dir` are followed automatically, a stripped stamp falls back to a pixel hash, and `relink_final` covers moves elsewhere. References resolve through Pinaxium, not file paths.
+- **Search and reuse:**
+  - `list_finals` searches across projects with paginated metadata and an optional single contact sheet, whose numbered tiles map one-to-one to `sheet_number`;
+  - `get_final` shows one final at a chosen size;
+  - `derive_from_final` branches into a new draft in any project, recording `derived_from`;
+  - draft and final URIs work as `edit_image` references and in `view_image`.
+- **Cleanup.**
+  - `delete_images` sends drafts (one by one, or a whole project's with its uploads) to the OS recycle bin. It never deletes permanently and never deletes finals.
+  - `draft_retention_days` recycles old unfinalized drafts automatically.
+- **New tools:** `list_projects` and `list_drafts`. `list_drafts` replaces `list_images`.
+- **New URI scheme:**
+  - `pinaxium://projects/<project>`
+  - `pinaxium://projects/<project>/drafts/<file>`
+  - `pinaxium://projects/<project>/finals/<id>`
+
+  It replaces `pinaxium://images/<file>`. Existing images move into `scratch` on first start.
+
+### Fixes
+- **Tool error messages now reach the model.** The MCP SDK showed only "Error executing tool …" for any exception other than its own `ToolError`, which hid every explanation of what to fix. Unknown or invalid resource URIs are now reported with their reason too.
+- **`get_job` is no longer marked read-only:** it records finished renders into their project.
+
 ## 0.3.0 — 2026-10-09
 
 ### Configuration

@@ -81,11 +81,84 @@ class ModelList(BaseModel):
     other_files: list[OtherFile] = Field(description="Model files that aren't part of a usable model")
 
 
-class ImageEntry(BaseModel):
-    path: str = Field(description="Full path of the saved PNG")
+class DraftEntry(BaseModel):
+    uri: str = Field(description="The draft's URI, pinaxium://projects/<project>/drafts/<file>: readable as a "
+                                 "resource, usable wherever an image is accepted")
+    path: str = Field(description="Full path of the PNG")
+    project: str = Field(description="Project the draft belongs to")
+    final_uri: str | None = Field(None, description="If this draft was finalized: its final's URI")
+    model: str | None = Field(None, description="Model that made it, when known")
+    prompt: str | None = Field(None, description="Prompt or instruction that made it, when known")
+    seed: int | None = Field(None, description="Seed used, when known")
     modified: str = Field(description="Local time, YYYY-MM-DD HH:MM:SS")
     bytes: int = Field(description="File size in bytes")
 
 
-class ImageList(BaseModel):
-    images: list[ImageEntry] = Field(description="Newest first")
+class DraftList(BaseModel):
+    drafts: list[DraftEntry] = Field(description="This page, newest first")
+    total: int = Field(description="How many drafts match in all")
+    next_offset: int | None = Field(None, description="Pass as offset for the next page; null on the last page")
+
+
+class FinalEntry(BaseModel):
+    id: str = Field(description="The final's permanent id within its project, e.g. portrait-001")
+    uri: str = Field(description="Permanent URI, pinaxium://projects/<project>/finals/<id>: readable as a resource, "
+                                 "usable wherever an image is accepted")
+    project: str = Field(description="Project the final belongs to")
+    title: str | None = Field(None, description="Title given at finalize_image")
+    description: str | None = Field(None, description="Description given at finalize_image (by default the prompt)")
+    tags: list[str] = Field(description="Tags given at finalize_image")
+    created: str | None = Field(None, description="When it was finalized, local time")
+    model: str | None = Field(None, description="Model that made it")
+    prompt: str | None = Field(None, description="Prompt or instruction that made it")
+    seed: int | None = Field(None, description="Seed used")
+    derived_from: str | None = Field(None, description="URI of the final it was derived from, if any")
+    source_draft: str | None = Field(None, description="URI of the draft it was finalized from")
+    path: str = Field(description="Where the file is now (renames and moves inside the finals folder are "
+                                  "followed); informational, refer to the final by its URI")
+    exists: bool = Field(description="False if the file can't be found (moved outside the finals folder or "
+                                     "deleted): relink_final it")
+    sheet_number: int | None = Field(None, description="With thumbnails: the number of this final's tile on the "
+                                                       "contact sheet")
+
+
+class FinalList(BaseModel):
+    finals: list[FinalEntry] = Field(description="This page, newest first")
+    total: int = Field(description="How many finals match in all")
+    next_offset: int | None = Field(None, description="Pass as offset for the next page; null on the last page")
+
+
+class ProjectEntry(BaseModel):
+    project: str = Field(description="Project name (pass as `project`)")
+    uri: str = Field(description="The project's resource: its drafts and finals with provenance")
+    drafts: int = Field(description="Working images in the project")
+    finals: int = Field(description="Finals registered in the project")
+    draft_bytes: int = Field(description="Disk space used by the drafts, bytes")
+    last_activity: str | None = Field(None, description="Newest image's time, local, YYYY-MM-DD HH:MM:SS")
+
+
+class ProjectList(BaseModel):
+    projects: list[ProjectEntry] = Field(description="All projects, by name")
+    finals_dir: str = Field(description="Folder holding every project's finals (setting finals_dir)")
+    draft_retention_days: float = Field(description="Unfinalized drafts older than this go to the recycle bin "
+                                                    "automatically; 0 = never")
+
+
+class FinalizeResult(BaseModel):
+    project: str = Field(description="Project of the final")
+    id: str = Field(description="The final's permanent id")
+    uri: str = Field(description="The final's permanent URI")
+    path: str = Field(description="Where the final's file is")
+    already_final: bool = Field(description="True if this draft had already been finalized (nothing copied; "
+                                            "the existing final is returned)")
+
+
+class NotDeleted(BaseModel):
+    image: str = Field(description="The image or file that was not deleted")
+    reason: str = Field(description="Why")
+
+
+class DeleteResult(BaseModel):
+    deleted: list[str] = Field(description="Files sent to the recycle bin")
+    not_deleted: list[NotDeleted] = Field(description="Files left in place, with the reason")
+    note: str = Field(description="Where deleted files went")

@@ -9,6 +9,7 @@ This guide is for anyone (or any agent) using Pinaxium through an MCP client. Th
 - [Writing prompts](#writing-prompts)
 - [Editing and composing](#editing-and-composing)
 - [Transparent images](#transparent-images)
+- [Projects, drafts and finals](#projects-drafts-and-finals)
 - [Results: where they go and how to get them back](#results-where-they-go-and-how-to-get-them-back)
 - [Timing and long renders](#timing-and-long-renders)
 - [The engine](#the-engine)
@@ -20,14 +21,15 @@ This guide is for anyone (or any agent) using Pinaxium through an MCP client. Th
 ## The basic loop
 
 1. **`list_models`**: see what's installed and usable, with notes comparing the models. The first model listed is the default.
-2. **`generate_image`** with a prompt, optionally a `model`, a size and a `seed`.
+2. **`generate_image`** with a prompt, optionally a `model`, a size, a `seed` and a **`project`** to keep this piece of work together (the default is `scratch`).
 3. **Look at the result.** The reply contains, in order:
-   - a text block with the saved path, size, settings used (model, steps, seed, cfg), render time and job id;
-   - a resource link to the full-size PNG;
+   - a text block with the saved path, size, settings used (model, steps, seed, cfg), project, render time and job id;
+   - a resource link to the full-size draft, `pinaxium://projects/<project>/drafts/<file>`;
    - a preview of up to 1024 px.
 
-   To check fine detail (lettering, hands, faces), call **`view_image`** with `crop` on the saved path.
+   To check fine detail (lettering, hands, faces), call **`view_image`** with `crop` on the draft's URI.
 4. **Iterate.** Keep the reported `seed` and change the prompt for controlled variations, or leave the seed out for fresh ones. Use **`edit_image`** to change an existing image rather than starting over.
+5. **Finish.** Use **`finalize_image`** on the keeper (it gets a permanent ID and URI), then **`delete_images`** on the leftover drafts. Deleted drafts go to the recycle bin.
 
 ## Choosing a model
 
@@ -64,12 +66,48 @@ Licenses differ: Qwen-Image 2.1 is research-only (non-commercial); Z-Image and k
 
 Qwen-Image 2.1 can output an alpha channel. Pass `transparent=true` and describe the background as transparent in the prompt. Other models reject `transparent=true`. Without it, all results are plain RGB.
 
+## Projects, drafts and finals
+
+A **project** is a named body of work, such as `logo-redesign` or `hexy`. Pass `project` to `generate_image`, `edit_image`, `derive_from_final` or `run_workflow`. A project is created on first use; names are 1–64 letters, digits, spaces, `.`, `-` or `_`.
+
+**Drafts** are every render, kept per project.
+- **Provenance:** each draft is recorded with what made it: prompt, model, seed, settings, and source images for edits.
+- **Browsing:** `list_drafts` pages through drafts, newest first.
+- **Addressing:** `pinaxium://projects/<project>/drafts/<file>`.
+
+**Finals** are the keepers. `finalize_image` copies a draft into the project's finals and gives it:
+- **A permanent ID and URI**, e.g. `pinaxium://projects/hexy/finals/portrait-001`. Choose the ID with `final_id`, or get the next `final-NNN`. IDs are never reused.
+- **Search metadata:** a `title`, a `description` (by default the prompt) and `tags`.
+- **The draft's full provenance.**
+
+Finalizing the same draft again returns its existing final. Finals are never deleted or overwritten by Pinaxium.
+
+**Refer to images by URI, not by path.** A final's URI resolves through Pinaxium wherever its file now is:
+- **The file is self-identifying.** It carries its own URI inside it, in a PNG text chunk added without touching the pixels or ComfyUI's metadata.
+- **Renames and moves inside the finals folder** are found and remembered automatically.
+- **Stripped metadata:** if a tool removes the stamp, the image is still recognised by its pixel content.
+- **Moves outside the finals folder:** `relink_final` points Pinaxium at the new location, and checks it really is that image.
+
+**Finding and reusing finals:**
+- **`list_finals`** searches across all projects. Every word of `query` must start a word of the final's ID, title, description, tags, prompt or project. Results come in pages (`limit`, `offset`, `next_offset`) and are metadata only by default.
+- **Thumbnails:** with `thumbnails=true` you also get **one** contact-sheet image of the page. Tile **#n** is the entry whose `sheet_number` is *n*, so a thumbnail always maps to exactly one URI. A final whose file is missing still gets its numbered slot.
+- **`get_final`** returns one final at a chosen size, with its metadata.
+- **`derive_from_final`** starts a new branch: an edit with the final as image 1, landing as a new draft in the final's project or any other. The new draft records `derived_from`, so lineage carries through when it's finalized in turn.
+- **Any draft or final URI** works as an `edit_image` reference, or in `view_image`.
+
+**Cleaning up:** `delete_images` sends drafts to the operating system's recycle bin, one by one or a whole project's at once (including its uploaded references). It never deletes finals, never touches anything outside Pinaxium's folders, and never falls back to a permanent delete: a file the recycle bin refuses is reported and left in place. Optionally, `draft_retention_days` recycles unfinalized drafts automatically after that many days (see [CONFIGURATION.md](CONFIGURATION.md)).
+
 ## Results: where they go and how to get them back
 
-- **Where they're saved:** every image goes full-size (PNG) to `<base_dir>/output/pinaxium/`. With the default setup that's ComfyUI's own `output` folder; see [CONFIGURATION.md](CONFIGURATION.md).
-- **From a reply:** use the path in the text block, or read the resource link `pinaxium://images/<file name>` for the full-size bytes.
-- **Later:** `list_images` (newest first) or the client's resource list, which shows the newest 500 images. Both work while the engine is stopped.
-- **Previews are downscaled:** at most 1024 px in render replies, and up to 1568 px with `view_image`. Read the resource for the original.
+| What | Where | URI |
+|---|---|---|
+| Drafts | `<base_dir>/output/pinaxium/<project>/` (ComfyUI's output folder by default) | `pinaxium://projects/<project>/drafts/<file>` |
+| Finals | `<finals_dir>/<project>/<id>.png` (your Pictures folder's `Pinaxium` by default) | `pinaxium://projects/<project>/finals/<id>` |
+| A project's record | `project.json` (drafts) and `finals.json` (finals) | `pinaxium://projects/<project>` |
+
+- **From a reply:** the resource link, or the path in the text block.
+- **Later:** `list_projects`, `list_drafts` and `list_finals`, or the client's resource list (finals first, then the newest drafts, 500 in all). All of them work while the engine is stopped.
+- **Previews are downscaled:** at most 1024 px in render replies, and up to 1568 px with `view_image` and `get_final`. Read the URI as a resource for the original.
 
 ## Timing and long renders
 
@@ -91,13 +129,15 @@ Qwen-Image 2.1 can output an alpha channel. Pass `transparent=true` and describe
 
 | Resource | Use |
 |---|---|
-| `pinaxium://images/<file name>` | Full-size image; listed individually by `resources/list` |
+| `pinaxium://projects/<project>/drafts/<file>` | A draft, full size |
+| `pinaxium://projects/<project>/finals/<id>` | A final, full size, by its permanent ID |
+| `pinaxium://projects/<project>` | The project's drafts and finals with their provenance; subscribe to hear about changes |
 | `pinaxium://engine/status` | Same JSON as `engine_status`; subscribe to be told when the engine starts, stops, gets busy or loads models |
 | `pinaxium://logs/comfyui` | ComfyUI's log (last 256 KB): the first place to look when a render fails |
 | `pinaxium://logs/supervisor` | The engine supervisor's log: start-up, idle shutdown, spawn problems |
 
 Clients are notified of changes:
-- A new image triggers a resource-list-changed notification.
+- A new or removed draft or final triggers a resource-list-changed notification.
 - A change to a subscribed resource triggers a resource-updated notification. The watcher checks every 2 s.
 
 ## run_workflow and the trust boundary
@@ -124,7 +164,11 @@ Agents should use it only when the user wants that. Operators who expose Pinaxiu
 | A model file isn't offered | Unsupported architecture, or still downloading | `list_models` → `other_files` says why. Unsupported families can still run via `run_workflow`. |
 | `model x can't edit images` / `give 1 to N image paths` | The model lacks editing, or you passed too many references | Pick a model with `capabilities.edit` and stay within its `max_reference_images` |
 | A reply with a `job_id` and no image | The render outlived `max_wait_s` | `get_job` with that id. Raise `max_wait_s` for big renders. |
-| `the engine is stopped, so the job's state is gone` | The engine stopped (idle or `stop_engine`) after the job ran | The image was still saved: use `list_images` |
+| `the engine is stopped, so the job's state is gone` | The engine stopped (idle or `stop_engine`) after the job ran | The image was still saved: use `list_drafts` |
+| `the file of final ... can't be found` / a final with `exists: false` | Its file was moved outside the finals folder, or deleted | `relink_final` with its new path. If it was deleted, restore it from the recycle bin or backup. |
+| `final id 'x' is already taken` | Final IDs are permanent and never reused | Choose another `final_id`, or omit it for the next `final-NNN` |
+| `invalid project name` | The name has characters a folder can't hold | Use letters, digits, spaces, `.`, `-` or `_` |
+| A file in `not_deleted` with `the recycle bin refused it` | The OS recycle bin can't take that file (e.g. on a network drive) | Delete it yourself if you want it gone. Pinaxium never deletes permanently. |
 | The engine never stops | Requests keep arriving, a job is queued, or the engine is `external` | `engine_status` shows `idle_minutes` and `status`. Use `stop_engine`, or stop your own ComfyUI. |
 | Tools don't appear in Claude Desktop | Desktop reads its config only at start-up | Restart Desktop after registering, and check the paths in `claude_desktop_config.json` |
 
@@ -140,9 +184,11 @@ Agents should use it only when the user wants that. Operators who expose Pinaxiu
 
 **Where are logs and state kept?** In `state_dir`; see [CONFIGURATION.md](CONFIGURATION.md#files-pinaxium-keeps). They're also readable as the `pinaxium://logs/...` resources.
 
+**Can I rename or reorganise my finals folder?** Yes, within `finals_dir`: renamed and moved finals are found by their embedded identity. If you move them somewhere else, use `relink_final`. If you change `finals_dir` itself, move the project folders along with it.
+
 **How do I uninstall?**
 1. Remove the `pinaxium` entry from your MCP client.
 2. Delete the cloned folder, the config file and `state_dir`.
-3. Optionally delete `<base_dir>/output/pinaxium` and `<base_dir>/input/pinaxium`.
+3. Optionally delete the drafts and uploads, `<base_dir>/output/pinaxium` and `<base_dir>/input/pinaxium`.
 
-ComfyUI and your models are not touched.
+Your finals in `finals_dir` are yours: keep them or delete them. ComfyUI and your models are not touched.

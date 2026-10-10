@@ -3,6 +3,7 @@ notifications (new image -> list_changed; engine state / log change -> updated f
 
 import asyncio
 import base64
+import json
 import os
 import socket
 import subprocess
@@ -16,6 +17,7 @@ from PIL import Image
 
 from pinaxium import resources as res
 from pinaxium.config import load
+from pinaxium.projects import ProjectError, Projects
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
@@ -31,17 +33,25 @@ def free_port() -> int:
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     comfy, state = tmp_path / "comfy", tmp_path / "state"
-    images = comfy / "output" / "pinaxium"
+    images = comfy / "output" / "pinaxium" / "art"            # project "art"
     images.mkdir(parents=True)
     state.mkdir()
     port = free_port()
-    env = {"PINAXIUM_COMFY_DIR": str(comfy), "PINAXIUM_STATE_DIR": str(state), "PINAXIUM_PORT": str(port)}
+    env = {"PINAXIUM_COMFY_DIR": str(comfy), "PINAXIUM_STATE_DIR": str(state), "PINAXIUM_PORT": str(port),
+           "PINAXIUM_FINALS_DIR": str(tmp_path / "finals")}
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     Image.new("RGB", (2048, 2048), (10, 20, 30)).save(images / "old.png")
     os.utime(images / "old.png", (time.time() - 100, time.time() - 100))
     Image.new("RGB", (64, 64), (200, 0, 0)).save(images / "new.png")
-    return {"cfg": load(), "images": images, "state": state, "port": port, "env": env, "tmp": tmp_path}
+    Image.new("RGB", (32, 32), (0, 200, 0)).save(images / "keeper.png")
+    os.utime(images / "keeper.png", (time.time() - 200, time.time() - 200))
+    cfg = load()
+    projects = Projects(cfg)
+    projects.record("art", [str(images / "keeper.png")], {"kind": "generate", "prompt": "a green square", "seed": 1})
+    final = projects.finalize(str(images / "keeper.png"), "hero-001", title="Hero")
+    return {"cfg": cfg, "projects": projects, "images": images, "final": final, "state": state, "port": port,
+            "env": env, "tmp": tmp_path}
 
 
 class Recorder:
@@ -76,25 +86,25 @@ def run(coro):
 
 # ---------- unit: URI safety and links ----------
 
-@pytest.mark.parametrize("name", ["..%2F..%2Fstate%2Fstate.json", "..\\..\\x.png", "../x.png", "/etc/x.png",
-                                  "C:%5Cx.png", "nope.png", "old.jpg", "", ".."])
-def test_image_path_refuses_anything_outside_the_images_folder(world, name):
-    with pytest.raises(ValueError):
-        res.image_path(world["cfg"], name)
+@pytest.mark.parametrize("uri", ["pinaxium://projects/art/drafts/..%2F..%2Fstate%2Fstate.json",
+                                 "pinaxium://projects/art/drafts/..", "pinaxium://projects/art/drafts/nope.png",
+                                 "pinaxium://projects/art/drafts/old.jpg", "pinaxium://projects/../drafts/old.png",
+                                 "pinaxium://projects/art/finals/missing-id", "pinaxium://projects/art"])
+def test_image_uris_resolve_only_to_pinaxium_images(world, uri):
+    with pytest.raises(ProjectError):
+        world["projects"].locate(uri)
 
 
-def test_image_path_accepts_saved_images(world):
-    assert res.image_path(world["cfg"], "old.png") == os.path.realpath(world["images"] / "old.png")
-
-
-def test_resource_links_only_for_exposed_images(world):
-    link = res.resource_link(world["cfg"], str(world["images"] / "new.png"))
-    assert link.uri.unicode_string() if hasattr(link.uri, "unicode_string") else str(link.uri)
-    assert str(link.uri) == "pinaxium://images/new.png" and link.mime_type == "image/png"
+def test_resource_links_for_drafts_and_finals_only(world):
+    pj = world["projects"]
+    link = res.resource_link(pj, str(world["images"] / "new.png"))
+    assert str(link.uri) == "pinaxium://projects/art/drafts/new.png" and link.mime_type == "image/png"
     assert link.size == os.path.getsize(world["images"] / "new.png")
+    final_link = res.resource_link(pj, world["final"]["path"])
+    assert str(final_link.uri) == "pinaxium://projects/art/finals/hero-001"
     other = world["tmp"] / "elsewhere.png"
     Image.new("RGB", (8, 8)).save(other)
-    assert res.resource_link(world["cfg"], str(other)) is None
+    assert res.resource_link(pj, str(other)) is None
 
 
 # ---------- over stdio ----------
@@ -109,18 +119,29 @@ def test_capabilities_listing_and_full_size_reads(world):
             listed = (await s.list_resources()).resources
             uris = [str(r.uri) for r in listed]
             assert uris[:3] == [res.ENGINE_URI, "pinaxium://logs/comfyui", "pinaxium://logs/supervisor"]
-            assert uris[3:] == ["pinaxium://images/new.png", "pinaxium://images/old.png"]      # newest first
+            assert uris[3:] == ["pinaxium://projects/art/finals/hero-001",                 # finals first
+                                "pinaxium://projects/art/drafts/new.png",                  # then drafts, newest first
+                                "pinaxium://projects/art/drafts/old.png",
+                                "pinaxium://projects/art/drafts/keeper.png",
+                                "pinaxium://projects/art"]                                 # then project manifests
             old = next(r for r in listed if str(r.uri).endswith("old.png"))
             assert old.size == os.path.getsize(world["images"] / "old.png") and old.annotations.last_modified
             templates = (await s.list_resource_templates()).resource_templates
-            assert [t.uri_template for t in templates] == [res.IMAGE_TEMPLATE]
-            blob = (await s.read_resource("pinaxium://images/old.png")).contents[0]
+            assert {t.uri_template for t in templates} == {res.DRAFT_TEMPLATE, res.FINAL_TEMPLATE, res.PROJECT_TEMPLATE}
+            blob = (await s.read_resource("pinaxium://projects/art/drafts/old.png")).contents[0]
             assert blob.mime_type == "image/png"
             assert base64.b64decode(blob.blob) == (world["images"] / "old.png").read_bytes()  # full size, unchanged
+            final = (await s.read_resource("pinaxium://projects/art/finals/hero-001")).contents[0]
+            with open(world["final"]["path"], "rb") as f:
+                assert base64.b64decode(final.blob) == f.read()
+            doc = json.loads((await s.read_resource("pinaxium://projects/art")).contents[0].text)
+            assert doc["finals"]["hero-001"]["title"] == "Hero" and doc["drafts"]["keeper.png"]["prompt"]
             status = (await s.read_resource(res.ENGINE_URI)).contents[0].text
             assert '"status": "stopped"' in status
-            with pytest.raises(Exception):
-                await s.read_resource("pinaxium://images/..%2F..%2Fstate%2Fstate.json")
+            for bad in ["pinaxium://projects/art/drafts/..%2F..%2Fstate%2Fstate.json",
+                        "pinaxium://projects/art/finals/nope"]:
+                with pytest.raises(Exception):
+                    await s.read_resource(bad)
     run(go())
 
 
@@ -138,7 +159,7 @@ def test_new_image_sends_list_changed(world):
             assert await rec.wait_for("notifications/resources/list_changed")
             await asyncio.sleep(res.POLL_S * 2)
             assert sum(m == "notifications/resources/list_changed" for m, _ in rec.events) == 1, rec.events
-            assert "pinaxium://images/fresh.png" in [str(r.uri) for r in (await s.list_resources()).resources]
+            assert "pinaxium://projects/art/drafts/fresh.png" in [str(r.uri) for r in (await s.list_resources()).resources]
     run(go())
 
 

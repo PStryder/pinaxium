@@ -144,6 +144,15 @@ def test_transparency_refused_by_rgb_only_families(call):
         call(wf.resolve({"steps": 4, "cfg": 1.0}, None, 1, None))
 
 
+def test_outputs_are_redirected_into_the_project_folder_keeping_their_prefix():
+    p = wf.resolve(QWEN_DEFAULTS, None, 1, None)
+    g = wf.into_folder(wf.QwenImage21.text_to_image(QWEN_FILES, "x", "", 512, 512, p), "pinaxium/My Art")
+    assert by_class(g, "SaveImage")[0]["inputs"]["filename_prefix"] == "pinaxium/My Art/qwen21"
+    custom = {"1": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI"}},
+              "2": {"class_type": "PreviewImage", "inputs": {}}}
+    assert wf.into_folder(custom, "pinaxium/x")["1"]["inputs"]["filename_prefix"] == "pinaxium/x/ComfyUI"
+
+
 def test_every_family_has_a_builder():
     from pinaxium.registry import FAMILIES
     for fam in FAMILIES:

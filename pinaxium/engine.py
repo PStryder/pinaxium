@@ -171,13 +171,13 @@ class Engine:
 
     # ---------- jobs ----------
 
-    async def upload(self, path: str) -> str:
+    async def upload(self, path: str, subfolder: str = "pinaxium") -> str:
         if not os.path.isfile(path):
             raise EngineError(f"no such image: {path}")
         async with httpx.AsyncClient(base_url=self.cfg.base_url, timeout=60) as c:
             with open(path, "rb") as f:
                 r = await c.post("/upload/image", files={"image": (os.path.basename(path), f)},
-                                 data={"overwrite": "true", "subfolder": "pinaxium"})
+                                 data={"overwrite": "true", "subfolder": subfolder})
             r.raise_for_status()
             j = r.json()
         return f"{j['subfolder']}/{j['name']}" if j.get("subfolder") else j["name"]
