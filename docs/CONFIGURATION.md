@@ -46,6 +46,7 @@ When no config file exists, the first use detects ComfyUI and writes one, with a
 | `finals_dir` | `PINAXIUM_FINALS_DIR` | `<Pictures>/Pinaxium` | Where finals are kept, one folder per project. On Windows "Pictures" is the shell's known Pictures folder, so OneDrive redirection is followed. |
 | `draft_retention_days` | `PINAXIUM_DRAFT_RETENTION_DAYS` | `0` (never) | Send unfinalized drafts older than this to the recycle bin; checked hourly while the service (or any client) runs |
 | `service_port` | `PINAXIUM_SERVICE_PORT` | `8190` | Port of the always-on service on 127.0.0.1: MCP at `/mcp`, image links at `/files/...` |
+| `service_allowed_origins` | `PINAXIUM_SERVICE_ALLOWED_ORIGINS` | none | Web origins allowed to call `/mcp`, answered with CORS. Only needed for clients that send an `Origin` header; as an environment variable, separate them with spaces. |
 
 For testing only, `PINAXIUM_TRASH_DIR` makes deletions move files into that folder instead of the OS recycle bin.
 
@@ -92,9 +93,41 @@ Clients reach Pinaxium in one of two ways, and both share the same engine, proje
 claude mcp add --transport http --scope user pinaxium http://127.0.0.1:8190/mcp
 ```
 
-**ChatGPT:**
-- **If your app can add a local MCP server**, use the URL above, or the stdio command if it only offers STDIO.
-- **If it only reaches servers on the internet**, as ChatGPT's cloud connectors do, a local URL is unreachable. That needs a tunnel, which Pinaxium deliberately doesn't set up.
+**ChatGPT** (desktop app, custom MCP connection, fully local):
+
+| Field | Value |
+|---|---|
+| Name | `Pinaxium` |
+| Type | `Streamable HTTP` |
+| URL | `http://127.0.0.1:8190/mcp` |
+| Authentication | none |
+
+The service must be running (`python -m pinaxium.service status`). What was verified against the live service, speaking raw HTTP:
+- **Protocol versions:** `initialize` works with every handshake version from 2024-11-05 to 2025-11-25, and returns a session (`Mcp-Session-Id`).
+- **Tools:** `tools/list` returns all tools, and structured results, image content and the clickable links all come through.
+- **No engine needed:** none of this starts ComfyUI.
+- **Sessions:** idle sessions are kept for 24 hours. After a service restart, clients start a new session as MCP requires.
+
+**If ChatGPT can't connect** (check `service.log` in `state_dir` for `Invalid Origin header`), its MCP client is sending a web `Origin` header. The service refuses unknown origins so that web pages can't drive it. Add the origin from the log to the config file, then run `python -m pinaxium.service restart`:
+
+```toml
+service_allowed_origins = ["<origin from the log>"]
+```
+
+Listed origins are also answered with CORS headers; everything else stays refused.
+
+**STDIO fallback** (if the HTTP connection doesn't work):
+
+| Field | Value |
+|---|---|
+| Command | `<pinaxium>\.venv\Scripts\python.exe` |
+| Arguments | `-m pinaxium.server` |
+| Working directory | `<pinaxium>` |
+| Environment | `PYTHONPATH=<pinaxium>` (needed only if the client can't set a working directory) |
+
+This was verified with an empty environment: Pinaxium finds its config, data and finals folders through Windows itself. A STDIO process belongs to its client, but it shares the same engine, projects and images as the service.
+
+**Not supported:** ChatGPT's cloud connectors reach only servers on the internet. Pinaxium deliberately has no tunnel or public endpoint.
 
 **Claude Desktop** (stdio): its config file can only launch servers. Add the server to `claude_desktop_config.json` (on Windows, `%APPDATA%\Claude\`), then restart Desktop:
 ```json

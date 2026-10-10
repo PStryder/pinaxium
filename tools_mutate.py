@@ -79,6 +79,11 @@ MUTATIONS = [
      "enable_dns_rebinding_protection=False"),
     ("service.py", "a second service starts on a taken port", "    if _port_taken(cfg.service_port):",
      "    if False:"),
+    ("service.py", "configured origins ignored", "allowed_origins=[f\"http://{h}\" for h in local] + extra_origins)",
+     "allowed_origins=[f\"http://{h}\" for h in local])"),
+    ("config.py", "config path depends on APPDATA being set",
+     "        base = _win_folder(\"APPDATA\", FOLDER_ROAMING_APPDATA, \"AppData\", \"Roaming\")",
+     "        base = os.environ.get(\"APPDATA\") or os.path.join(_home(), \"AppData\", \"Roaming\")"),
     ("server.py", "legacy subscribe not registered",
      'mcp._lowlevel_server.add_request_handler("resources/subscribe", SubscribeRequestParams, notifier.on_subscribe)\n', ""),
     ("server.py", "saved images not listed", "return await super().list_resources() + res.image_resources(projects)",
@@ -165,17 +170,23 @@ MUTATIONS = [
 ]
 
 
+LAST_OUTPUT = {"text": ""}
+
+
 def suite_fails() -> bool:
     try:
         r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x"], capture_output=True, text=True, timeout=900)
     except subprocess.TimeoutExpired:
+        LAST_OUTPUT["text"] = "timed out"
         return True                     # a mutation that hangs the suite is caught too
+    LAST_OUTPUT["text"] = r.stdout[-4000:] + r.stderr[-1000:]
     return r.returncode != 0
 
 
 def main():
     only = sys.argv[1:]          # optional substrings: re-run just the matching mutations
     if suite_fails():
+        print(LAST_OUTPUT["text"])
         sys.exit("clean suite fails; fix tests first")
     results = []
     for fname, name, old, new in MUTATIONS:

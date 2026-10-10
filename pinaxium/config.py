@@ -33,6 +33,7 @@ FIELDS: dict[str, tuple[str, type, object]] = {
     "finals_dir": ("PINAXIUM_FINALS_DIR", str, None),
     "draft_retention_days": ("PINAXIUM_DRAFT_RETENTION_DAYS", float, 0.0),
     "service_port": ("PINAXIUM_SERVICE_PORT", int, 8190),
+    "service_allowed_origins": ("PINAXIUM_SERVICE_ALLOWED_ORIGINS", list, []),
 }
 WINDOWS = os.name == "nt"
 
@@ -43,11 +44,43 @@ def _home() -> str:
     return os.path.expanduser("~")
 
 
+def _known_folder(guid: str) -> str | None:
+    """A Windows shell known folder (follows redirection; needs no environment variables)."""
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("data", ctypes.c_ubyte * 16)]
+
+        folder_id = GUID()
+        ctypes.memmove(folder_id.data, uuid.UUID(guid).bytes_le, 16)
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(out)) == 0:
+            path = out.value
+            ctypes.windll.ole32.CoTaskMemFree(ctypes.cast(out, wintypes.LPVOID))
+            return path or None
+    except (OSError, AttributeError, ValueError):
+        pass
+    return None
+
+
+FOLDER_ROAMING_APPDATA = "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D"
+FOLDER_LOCAL_APPDATA = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
+FOLDER_PICTURES = "33E28130-4E1E-4676-835A-98395C3BC3BB"
+
+
+def _win_folder(env: str, guid: str, *fallback: str) -> str:
+    """Environment variable if set (an MCP client may pass a minimal environment), else the shell's known folder."""
+    return os.environ.get(env) or _known_folder(guid) or os.path.join(_home(), *fallback)
+
+
 def config_path() -> str:
     if os.environ.get("PINAXIUM_CONFIG"):
         return os.environ["PINAXIUM_CONFIG"]
     if WINDOWS:
-        base = os.environ.get("APPDATA") or os.path.join(_home(), "AppData", "Roaming")
+        base = _win_folder("APPDATA", FOLDER_ROAMING_APPDATA, "AppData", "Roaming")
     elif sys.platform == "darwin":
         base = os.path.join(_home(), "Library", "Application Support")
     else:
@@ -57,7 +90,7 @@ def config_path() -> str:
 
 def default_state_dir() -> str:
     if WINDOWS:
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(_home(), "AppData", "Local")
+        base = _win_folder("LOCALAPPDATA", FOLDER_LOCAL_APPDATA, "AppData", "Local")
         return os.path.join(base, "pinaxium", "state")
     if sys.platform == "darwin":
         return os.path.join(_home(), "Library", "Application Support", "pinaxium", "state")
@@ -68,25 +101,9 @@ def pictures_dir() -> str:
     """The user's Pictures folder: on Windows the shell's known folder (follows OneDrive redirection), else
     ~/Pictures, else the home folder."""
     if WINDOWS:
-        try:
-            import ctypes
-            import uuid
-            from ctypes import wintypes
-
-            class GUID(ctypes.Structure):
-                _fields_ = [("data", ctypes.c_ubyte * 16)]
-
-            folder_id = GUID()
-            ctypes.memmove(folder_id.data, uuid.UUID("33E28130-4E1E-4676-835A-98395C3BC3BB").bytes_le, 16)
-            out = ctypes.c_wchar_p()
-            shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
-            if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(out)) == 0:
-                path = out.value
-                ole32.CoTaskMemFree(ctypes.cast(out, wintypes.LPVOID))
-                if path:
-                    return path
-        except (OSError, AttributeError, ValueError):
-            pass
+        path = _known_folder(FOLDER_PICTURES)
+        if path:
+            return path
     p = os.path.join(_home(), "Pictures")
     return p if os.path.isdir(p) else _home()
 
@@ -227,6 +244,8 @@ def render_config(values: dict, notes: list[str]) -> str:
         "finals_dir": "where finalize_image copies finished images, one folder per project",
         "draft_retention_days": "send unfinalized drafts older than this to the recycle bin; 0 = never",
         "service_port": "port of the always-on Pinaxium service (MCP at /mcp, image links at /files), on 127.0.0.1",
+        "service_allowed_origins": "extra web origins allowed to call /mcp, with CORS (only for clients that send "
+                                   "an Origin header, e.g. browser-based ones); none by default",
     }
     for key in FIELDS:
         lines.append(f"# {help_[key]}")
@@ -285,6 +304,7 @@ class Config:
     finals_dir: str
     draft_retention_days: float
     service_port: int
+    service_allowed_origins: tuple[str, ...]
     config_file: str
     sources: dict = field(default_factory=dict, compare=False)
 
@@ -380,7 +400,8 @@ def load(create: bool = True) -> Config:
                   idle_minutes=values["idle_minutes"], start_timeout_s=values["start_timeout_s"],
                   state_dir=values["state_dir"], default_model=values["default_model"],
                   finals_dir=values["finals_dir"], draft_retention_days=values["draft_retention_days"],
-                  service_port=values["service_port"], config_file=path,
+                  service_port=values["service_port"],
+                  service_allowed_origins=tuple(values["service_allowed_origins"] or ()), config_file=path,
                   sources=sources)
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 — 2026-10-09
+
+- **ChatGPT desktop is verified and documented,** using Streamable HTTP at `http://127.0.0.1:8190/mcp` with no authentication, all local. The STDIO fallback is documented with its real command, arguments and working directory.
+- **New setting `service_allowed_origins`** (empty by default): web origins allowed to call `/mcp`, answered with CORS. It's for clients that send an `Origin` header; everything else stays refused.
+- **The service keeps idle MCP sessions for 24 hours** (the SDK default was 30 minutes).
+- **Config and state folders resolve through Windows known folders** when `APPDATA`/`LOCALAPPDATA` are missing, as they can be when a client launches the server with a minimal environment.
+- **New probes:**
+  - `tools_probe.py` speaks raw HTTP to a running service: every protocol version, tools, structured and image results, Origin/CORS behaviour, and whether the engine started;
+  - `tools_probe_stdio.py` launches STDIO the way a client configuration would.
+- **`service restart`/`install`** wait up to 60 s for the service to answer.
+
 ## 0.5.0 — 2026-10-09
 
 - **The always-on service** (`python -m pinaxium.service`) is one process on `127.0.0.1:8190`:

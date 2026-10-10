@@ -27,6 +27,7 @@ import httpx
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TASK_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_task.ps1")
 TASK_NAME = "Pinaxium"
+SESSION_IDLE_S = 24 * 3600          # MCP sessions idle this long are dropped (SDK default 30 min); clients re-initialize
 
 
 def _port_taken(port: int) -> bool:
@@ -44,16 +45,27 @@ def run() -> int:
     if _port_taken(cfg.service_port):
         print(f"port {cfg.service_port} is in use (another Pinaxium service?); exiting", flush=True)
         return 1
+    import uvicorn
     from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.middleware.cors import CORSMiddleware
+
     from pinaxium import server
     server.SERVICE_MODE = True
     port = cfg.service_port
     local = [f"127.0.0.1:{port}", f"localhost:{port}"]
-    # MCP endpoint: only requests addressed to this machine, and only from local pages if from a browser at all
+    extra_origins = list(cfg.service_allowed_origins)
+    # MCP endpoint: only requests addressed to this machine. Requests without an Origin header (native clients)
+    # are fine; with one, only the service's own pages and origins listed in service_allowed_origins.
     security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=local,
-                                         allowed_origins=[f"http://{h}" for h in local])
-    print(f"pinaxium service on http://127.0.0.1:{port}/mcp", flush=True)
-    server.mcp.run("streamable-http", host="127.0.0.1", port=port, transport_security=security)
+                                         allowed_origins=[f"http://{h}" for h in local] + extra_origins)
+    app = server.mcp.streamable_http_app(transport_security=security, host="127.0.0.1",
+                                         session_idle_timeout=SESSION_IDLE_S)
+    if extra_origins:                      # browser-based clients also need CORS answers from those origins
+        app.add_middleware(CORSMiddleware, allow_origins=extra_origins, allow_methods=["GET", "POST", "DELETE"],
+                           allow_headers=["*"], expose_headers=["Mcp-Session-Id", "Mcp-Protocol-Version"])
+    print(f"pinaxium service on http://127.0.0.1:{port}/mcp"
+          + (f" (also allowing origins {extra_origins})" if extra_origins else ""), flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
     return 0
 
 
@@ -100,7 +112,7 @@ def main(argv: list[str]) -> int:
         return 2
     import time
     if cmd in ("install", "restart"):
-        for _ in range(40):                     # give it a moment to come up
+        for _ in range(120):                    # starting takes a while (imports, model scan): up to 60 s
             if "answering on" in _answering(port):
                 break
             time.sleep(0.5)

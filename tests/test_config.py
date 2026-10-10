@@ -176,6 +176,18 @@ def test_engine_refuses_to_start_on_a_broken_setup_without_spawning(clean_env, m
     assert not os.path.exists(clean_env / "state" / "spawn_env.json"), "a supervisor was spawned anyway"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows known folders")
+def test_folders_resolve_without_any_environment_variables(monkeypatch):
+    """An MCP client may launch the server with a near-empty environment: the config and state folders must
+    still be the user's real ones, found through the shell rather than APPDATA/USERPROFILE."""
+    expected_cfg = os.path.join(C._known_folder(C.FOLDER_ROAMING_APPDATA), "pinaxium", "config.toml")
+    expected_state = os.path.join(C._known_folder(C.FOLDER_LOCAL_APPDATA), "pinaxium", "state")
+    for var in ("PINAXIUM_CONFIG", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME"):
+        monkeypatch.delenv(var, raising=False)
+    assert C.config_path() == expected_cfg
+    assert C.default_state_dir() == expected_state
+
+
 # ---------- launch command ----------
 
 def test_launch_command_adds_base_directory_only_when_data_lives_elsewhere(clean_env):

@@ -112,6 +112,37 @@ def test_only_this_machines_requests_and_only_pinaxium_images(service):
     assert foreign_page.status_code in (403, 421)
 
 
+def test_configured_origins_get_mcp_and_cors_others_still_refused(tmp_path, monkeypatch):
+    """service_allowed_origins opens /mcp (with CORS) to listed origins only, e.g. a browser-based client."""
+    port = free_port()
+    env = {**os.environ, "PINAXIUM_COMFY_DIR": str(tmp_path / "comfy"), "PINAXIUM_STATE_DIR": str(tmp_path / "s"),
+           "PINAXIUM_FINALS_DIR": str(tmp_path / "f"), "PINAXIUM_SERVICE_PORT": str(port),
+           "PINAXIUM_PORT": str(free_port()), "PINAXIUM_SERVICE_ALLOWED_ORIGINS": "https://client.example"}
+    proc = subprocess.Popen([sys.executable, "-m", "pinaxium.service", "run"], cwd=PROJECT, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    url = f"http://127.0.0.1:{port}/mcp"
+    try:
+        for _ in range(100):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/health", timeout=0.5)
+                break
+            except httpx.HTTPError:
+                time.sleep(0.2)
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+        headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+        pre = httpx.options(url, headers={"Origin": "https://client.example", "Access-Control-Request-Method": "POST",
+                                          "Access-Control-Request-Headers": "content-type,mcp-session-id"})
+        assert pre.status_code == 200 and pre.headers["access-control-allow-origin"] == "https://client.example"
+        ok = httpx.post(url, headers={**headers, "Origin": "https://client.example"}, json=init)
+        assert ok.status_code == 200 and "mcp-session-id" in ok.headers.get("access-control-expose-headers", "").lower()
+        other = httpx.post(url, headers={**headers, "Origin": "https://other.example"}, json=init)
+        assert other.status_code == 403
+    finally:
+        proc.kill()
+        proc.wait(10)
+
+
 def test_a_second_service_on_the_same_port_exits(service):
     r = subprocess.run([sys.executable, "-m", "pinaxium.service", "run"], cwd=PROJECT,
                        env={**os.environ, **service["env"]}, capture_output=True, text=True, timeout=60)
