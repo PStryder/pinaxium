@@ -1,0 +1,21 @@
+[project]
+name = "pinaxium"
+version = "0.2.0"
+description = "MCP server for local image generation and editing through an on-demand ComfyUI engine"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=2.3,<3",
+    "pillow>=12.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
