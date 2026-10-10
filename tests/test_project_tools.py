@@ -92,8 +92,15 @@ def test_list_finals_search_paging_and_numbered_contact_sheet(world):
         assert [f["exists"] for f in page["finals"]] == [True, True, False, True]
         images = [c for c in r.content if c.type == "image"]
         assert len(images) == 1, "one contact sheet, not one image per final"
-        sheet = Image.open(io.BytesIO(base64.b64decode(images[0].data)))
+        sheet = Image.open(io.BytesIO(base64.b64decode(images[0].data))).convert("RGB")
         assert sheet.width == 4 * 192                                   # four tiles: the missing one kept its slot
+        # the missing tile's red "file missing" frame (JPEG blurs it, so compare the frame's left edge on average)
+        edge = [sheet.getpixel((2 * 192 + 3, y)) for y in range(40, 150)]
+        red, green = sum(p[0] for p in edge) / len(edge), sum(p[1] for p in edge) / len(edge)
+        assert red > green + 40, "missing tile isn't marked as missing"
+        # no always-on service in this test: file links only, never a browser link that wouldn't open
+        assert all(f["local_url"] is None for f in page["finals"])
+        assert all(f["file_uri"].startswith("file:///") for f in page["finals"] if f["exists"])
         no_thumbs = await s.call_tool("list_finals", {})
         assert [c.type for c in no_thumbs.content] == ["text"]
         assert all(f["sheet_number"] is None for f in data(no_thumbs)["finals"])

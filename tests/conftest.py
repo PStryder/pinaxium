@@ -1,5 +1,5 @@
 """Hermetic by default: every load() in the test run (server subprocesses inherit the environment) sees a
-throwaway config file, an empty ComfyUI folder, its own state folder and an unused port, so no test touches
+throwaway config file, an empty ComfyUI folder, its own state folder and unused ports, so no test touches
 the real install, engine or config unless it sets its own values (test_detector_real does, explicitly)."""
 
 import os
@@ -24,6 +24,7 @@ def pytest_configure(config):
         "PINAXIUM_COMFY_DIR": comfy,
         "PINAXIUM_STATE_DIR": os.path.join(_tmp, "state"),
         "PINAXIUM_PORT": str(_free_port()),
+        "PINAXIUM_SERVICE_PORT": str(_free_port()),                # never the real always-on service
         "PINAXIUM_FINALS_DIR": os.path.join(_tmp, "finals"),       # never the real Pictures folder
         "PINAXIUM_TRASH_DIR": os.path.join(_tmp, "trash"),         # never the real recycle bin
     })
