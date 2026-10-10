@@ -37,6 +37,10 @@ def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
+# No numeric fields (size, priority) in resource entries or links: valid MCP, but the Rust SDK used by Codex /
+# ChatGPT desktop (rmcp) fails to parse numbers inside them and drops the whole result ("Unexpected response
+# type"). Order already says what matters most; sizes are in the listing tools.
+
 def image_resources(projects: Projects) -> list[Resource]:
     """Finals first (they matter most), then the newest drafts, LIST_LIMIT in all; then one manifest per
     project."""
@@ -47,18 +51,16 @@ def image_resources(projects: Projects) -> list[Resource]:
         st = os.stat(f["path"])
         label = f["title"] or f["id"]
         out.append(Resource(uri=f["uri"], name=f["id"], title=f"Final {label} ({f['project']})", mime_type="image/png",
-                            size=st.st_size, description=(f["description"] or "Finished image")[:200],
-                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"],
-                                                    priority=1.0)))
+                            description=(f["description"] or "Finished image")[:200],
+                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"])))
     for d in projects.drafts():
         if len(out) >= LIST_LIMIT:
             break
         st = os.stat(d["path"])
         name = os.path.basename(d["path"])
         out.append(Resource(uri=d["uri"], name=name, title=f"Draft {name} ({d['project']})", mime_type="image/png",
-                            size=st.st_size, description="Draft" + (f": {d['prompt'][:160]}" if d.get("prompt") else ""),
-                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"],
-                                                    priority=0.5)))
+                            description="Draft" + (f": {d['prompt'][:160]}" if d.get("prompt") else ""),
+                            annotations=Annotations(last_modified=_iso(st.st_mtime), audience=["user", "assistant"])))
     for p in projects.list_projects():
         out.append(Resource(uri=p["uri"], name=f"project-{p['project']}", title=f"Project {p['project']}",
                             mime_type="application/json",
@@ -82,8 +84,7 @@ def resource_link(projects: Projects, path: str) -> ResourceLink | None:
     name = os.path.basename(real)
     uri = final_uri(project, fid) if kind == "final" else draft_uri(project, name)
     return ResourceLink(uri=uri, name=fid or name, title=f"{kind.title()} {fid or name} ({project})",
-                        mime_type="image/png", size=os.path.getsize(real),
-                        description="Full-size image (read it as a resource)")
+                        mime_type="image/png", description="Full-size image (read it as a resource)")
 
 
 def log_tail(cfg: Config, filename: str) -> str:

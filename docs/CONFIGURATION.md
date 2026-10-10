@@ -116,6 +116,10 @@ service_allowed_origins = ["<origin from the log>"]
 
 Listed origins are also answered with CORS headers; everything else stays refused.
 
+**Connected but no tools?**
+- **Codex/ChatGPT desktop loads MCP tools when a thread starts,** so start a new thread after adding the server.
+- **Its log shows the server's state:** `~/.codex/logs_2.sqlite`, table `logs`. Search it for `pinaxium`. "Service initialized" means the connection works.
+
 **STDIO fallback** (if the HTTP connection doesn't work):
 
 | Field | Value |

@@ -95,11 +95,24 @@ def test_image_uris_resolve_only_to_pinaxium_images(world, uri):
         world["projects"].locate(uri)
 
 
+def _numbers(value, path="") -> list[str]:
+    """Paths of numeric values: serde with arbitrary_precision, as in Codex's rmcp, can't read them in resources."""
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [path]
+    if isinstance(value, dict):
+        return [p for k, v in value.items() for p in _numbers(v, f"{path}.{k}")]
+    if isinstance(value, list):
+        return [p for i, v in enumerate(value) for p in _numbers(v, f"{path}[{i}]")]
+    return []
+
+
 def test_resource_links_for_drafts_and_finals_only(world):
     pj = world["projects"]
     link = res.resource_link(pj, str(world["images"] / "new.png"))
     assert str(link.uri) == "pinaxium://projects/art/drafts/new.png" and link.mime_type == "image/png"
-    assert link.size == os.path.getsize(world["images"] / "new.png")
+    assert not _numbers(link.model_dump(by_alias=True, exclude_none=True)), "numbers break Codex's MCP client"
     final_link = res.resource_link(pj, world["final"]["path"])
     assert str(final_link.uri) == "pinaxium://projects/art/finals/hero-001"
     other = world["tmp"] / "elsewhere.png"
@@ -125,7 +138,9 @@ def test_capabilities_listing_and_full_size_reads(world):
                                 "pinaxium://projects/art/drafts/keeper.png",
                                 "pinaxium://projects/art"]                                 # then project manifests
             old = next(r for r in listed if str(r.uri).endswith("old.png"))
-            assert old.size == os.path.getsize(world["images"] / "old.png") and old.annotations.last_modified
+            assert old.annotations.last_modified
+            # rmcp (Codex / ChatGPT desktop) drops the whole listing if any entry carries a number
+            assert not _numbers([r.model_dump(by_alias=True, exclude_none=True) for r in listed])
             templates = (await s.list_resource_templates()).resource_templates
             assert {t.uri_template for t in templates} == {res.DRAFT_TEMPLATE, res.FINAL_TEMPLATE, res.PROJECT_TEMPLATE}
             blob = (await s.read_resource("pinaxium://projects/art/drafts/old.png")).contents[0]

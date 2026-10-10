@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 — 2026-10-10
+
+- **Codex / ChatGPT desktop can read the resource list.** Their MCP client (the Rust SDK, rmcp) failed on `resources/list` with "Unexpected response type": it can't read numbers inside resource entries, valid as they are. Resource entries and the resource links in tool results no longer carry `size` or annotation `priority`. A test keeps numbers out of them.
+
 ## 0.5.1 — 2026-10-09
 
 - **ChatGPT desktop is verified and documented,** using Streamable HTTP at `http://127.0.0.1:8190/mcp` with no authentication, all local. The STDIO fallback is documented with its real command, arguments and working directory.
